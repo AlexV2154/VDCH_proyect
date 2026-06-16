@@ -1,6 +1,26 @@
 package com.example;
 
+import com.vdch.abastecimiento.model.Abastecimiento;
+import com.vdch.abastecimiento.model.DetalleAbastecimiento;
+import com.vdch.abastecimiento.service.AbastecimientoService;
+import com.vdch.categoria.model.Categoria;
+import com.vdch.categoria.service.CategoriaService;
+import com.vdch.cliente.dto.ClienteResumen;
+import com.vdch.cliente.model.Cliente;
+import com.vdch.cliente.service.ClienteService;
+import com.vdch.fiado.dto.FiadoResumen;
+import com.vdch.fiado.service.FiadoService;
+import com.vdch.inventario.dto.ProductoStockBajo;
+import com.vdch.inventario.model.Producto;
+import com.vdch.inventario.service.ProductoService;
+import com.vdch.reportes.dto.ProductoVendidoReporte;
+import com.vdch.reportes.dto.ResumenReporte;
+import com.vdch.reportes.service.ReporteService;
+import com.vdch.venta.model.DetalleVenta;
+import com.vdch.venta.model.Venta;
+import com.vdch.venta.service.VentaService;
 import javafx.application.Application;
+import javafx.application.Platform;
 import javafx.beans.property.SimpleStringProperty;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
@@ -20,6 +40,9 @@ import javafx.stage.Modality;
 import javafx.stage.Popup;
 import javafx.stage.Stage;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -30,12 +53,26 @@ public class Main extends Application {
     private String current = "Inicio";
     private Debt selectedDebt;
 
+    private final ClienteService clienteService = new ClienteService();
+    private final ProductoService productoService = new ProductoService();
+    private final CategoriaService categoriaService = new CategoriaService();
+    private final VentaService ventaService = new VentaService();
+    private final FiadoService fiadoService = new FiadoService();
+    private final AbastecimientoService abastecimientoService = new AbastecimientoService();
+    private final ReporteService reporteService = new ReporteService();
+
     private final String[] menu = {"Inicio", "Ventas", "Inventario", "Categorias", "Clientes", "Fiados", "Reportes", "Abastecimiento"};
-    private final List<Debt> debts = new ArrayList<>(List.of(
-            new Debt("Mario Holgado", "Hoy", "S/ 9.00", true),
-            new Debt("Juan Perez", "Ayer", "S/ 5.00", true),
-            new Debt("Maria Valeria", "Pagado", "S/ 12.00", false)
-    ));
+    private final List<Debt> debts = new ArrayList<>();
+    private final Object cacheLock = new Object();
+    private boolean backendLoaded;
+    private boolean backendLoading;
+    private ResumenReporte cachedResumen = new ResumenReporte();
+    private List<ProductoStockBajo> cachedStockBajo = new ArrayList<>();
+    private List<ProductoVendidoReporte> cachedMasVendidos = new ArrayList<>();
+    private List<ClienteResumen> cachedClientes = new ArrayList<>();
+    private List<Categoria> cachedCategorias = new ArrayList<>();
+    private List<Producto> cachedProductos = new ArrayList<>();
+    private List<FiadoResumen> cachedFiados = new ArrayList<>();
 
     public static void main(String[] args) {
         launch(args);
@@ -97,6 +134,7 @@ public class Main extends Application {
         sidebar = new VBox(9);
         sidebar.getStyleClass().add("sidebar");
         app.setLeft(sidebar);
+        refreshBackendData();
         go("Inicio");
         stage.setScene(scene(app, 1160, 735));
         notify("Bienvenida", "Lista para vender, revisar fiados y registrar pagos.");
@@ -136,13 +174,15 @@ public class Main extends Application {
     }
 
     private VBox inicio() {
+        ResumenReporte resumen = safeResumenHoy();
+        List<ProductoStockBajo> stockBajo = safeStockBajo();
         GridPane stats = new GridPane();
         stats.setHgap(14);
         stats.setVgap(14);
-        stats.add(stat(icon("Ventas") + " Ventas hoy", "S/ 35.50", "5 ventas registradas"), 0, 0);
-        stats.add(stat(icon("profit") + " Ganancia", "S/ 11.75", "Margen del dia"), 1, 0);
-        stats.add(stat(icon("Fiados") + " Por cobrar", "S/ 14.00", "2 clientes pendientes"), 2, 0);
-        stats.add(stat(icon("Inventario") + " Stock bajo", "2", "Productos por reponer"), 3, 0);
+        stats.add(stat(icon("Ventas") + " Ventas hoy", money(resumen.getVentas()), "Total registrado"), 0, 0);
+        stats.add(stat(icon("profit") + " Ganancia", money(resumen.getGanancia()), "Margen del dia"), 1, 0);
+        stats.add(stat(icon("Fiados") + " Por cobrar", money(resumen.getFiados()), "Saldo pendiente"), 2, 0);
+        stats.add(stat(icon("Inventario") + " Stock bajo", String.valueOf(stockBajo.size()), "Productos por reponer"), 3, 0);
 
         HBox quick = new HBox(12,
                 shortcut("Nueva venta", "Ventas"),
@@ -150,33 +190,36 @@ public class Main extends Application {
                 shortcut("Clientes", "Clientes"),
                 shortcut("Cobrar fiado", "Fiados")
         );
-        VBox low = panel("Avisos importantes", row("Maracuya", "Queda 1"), row("Coca Cola", "Queda 1"), row("Fiados pendientes", "S/ 14.00"));
+        VBox low = panel("Avisos importantes", stockRows(stockBajo));
         return page("Buen dia", null, stats, quick, chart(), low);
     }
 
     private VBox ventas() {
-        ComboBox<String> customer = new ComboBox<>();
-        customer.getItems().addAll("Venta rapida", "Mario Holgado", "Juan Perez", "Maria Valeria", "Cliente nuevo");
-        customer.setValue("Venta rapida");
+        List<CartLine> cartLines = new ArrayList<>();
+        List<ClienteResumen> clientes = safeClientes(null);
+        ComboBox<CustomerChoice> customer = new ComboBox<>();
+        customer.getItems().add(new CustomerChoice(null, "Venta rapida", null, BigDecimal.ZERO));
+        for (ClienteResumen cliente : clientes) {
+            customer.getItems().add(new CustomerChoice(
+                    cliente.getIdCliente(),
+                    cliente.getNombres(),
+                    cliente.getTelefono(),
+                    valueOrZero(cliente.getSaldoFiado())
+            ));
+        }
+        customer.setValue(customer.getItems().get(0));
         customer.getStyleClass().add("input");
         Label customerInfo = muted("Sin cliente registrado. Ideal para compras al paso.");
         customer.setOnAction(e -> {
-            String value = customer.getValue();
-            if ("Venta rapida".equals(value)) {
+            CustomerChoice value = customer.getValue();
+            if (value == null || value.idCliente == null) {
                 customerInfo.setText("Sin cliente registrado. Ideal para compras al paso.");
-            } else if ("Cliente nuevo".equals(value)) {
-                customerInfo.setText("Cliente nuevo seleccionado. Puedes guardarlo desde Clientes.");
-                notify("Cliente nuevo", "Luego puedes registrarlo en el modulo Clientes.");
-            } else if ("Mario Holgado".equals(value)) {
-                customerInfo.setText("Telefono: 999 999 999 | Saldo fiado: S/ 9.00");
-            } else if ("Juan Perez".equals(value)) {
-                customerInfo.setText("Telefono: 987 654 321 | Saldo fiado: S/ 5.00");
             } else {
-                customerInfo.setText("Telefono: 912 456 789 | Sin deuda pendiente");
+                customerInfo.setText("Telefono: " + textOrEmpty(value.telefono) + " | Saldo fiado: " + money(value.saldoFiado));
             }
         });
         Button newCustomer = button(icon("add") + " Nuevo cliente", "soft big-button");
-        newCustomer.setOnAction(e -> modal("Nuevo cliente", List.of("Nombre", "Telefono", "Notas")));
+        newCustomer.setOnAction(e -> clienteModal());
         VBox customerBox = new VBox(10,
                 title("Cliente que compra", 18),
                 field("Seleccionar cliente", customer),
@@ -185,29 +228,23 @@ public class Main extends Application {
         );
         customerBox.getStyleClass().add("customer-box");
 
-        VBox cartItems = new VBox(8,
-                row("Coca Cola", "1 unidad  S/ 3.00"),
-                row("Arroz Costeno", "500 g  S/ 2.10")
-        );
-        Label total = title("Total: S/ 5.10", 20);
+        VBox cartItems = new VBox(8, muted("Carrito vacio"));
+        Label total = title("Total: S/ 0.00", 20);
 
-        HBox products = new HBox(12,
-                product("Arroz Costeno", "S/ 4.20 x kg", "Granel: kilo o gramos", "Ej: 500 g o 2 kg", cartItems, total),
-                product("Coca Cola", "S/ 3.00", "Unidad: botella 500 ml", "Ej: 1 unidad o 6 unidades", cartItems, total),
-                product("Maracuya", "S/ 7.50 x kg", "Granel: kilo o gramos", "Ej: 250 g o 1 kg", cartItems, total),
-                product("Aceite Primor", "S/ 8.00", "Unidad: botella", "Ej: 1 unidad", cartItems, total)
-        );
+        HBox products = new HBox(12);
+        for (Producto producto : safeProductos(null)) {
+            products.getChildren().add(product(producto, cartItems, total, cartLines));
+        }
+        if (products.getChildren().isEmpty()) {
+            products.getChildren().add(muted("No hay productos registrados en la base de datos."));
+        }
 
         Button confirm = button(icon("ok") + "  Confirmar venta", "primary big-button");
-        confirm.setOnAction(e -> notify("Venta registrada", "Se guardo la venta por S/ 5.50."));
+        confirm.setOnAction(e -> registrarVentaDesdeCarrito(customer.getValue(), cartLines, false));
         Button charge = button(icon("money") + "  Cobrar ahora", "dark big-button");
-        charge.setOnAction(e -> notify("Cobro listo", "Puedes entregar el comprobante al cliente."));
+        charge.setOnAction(e -> registrarVentaDesdeCarrito(customer.getValue(), cartLines, false));
         Button debt = button(icon("Fiados") + "  Guardar como fiado", "soft big-button");
-        debt.setOnAction(e -> {
-            debts.add(new Debt("Cliente nuevo", "Hoy", "S/ 5.50", true));
-            notify("Fiado agregado", "La venta paso a la lista de Fiados.");
-            go("Fiados");
-        });
+        debt.setOnAction(e -> registrarVentaDesdeCarrito(customer.getValue(), cartLines, true));
 
         VBox cart = new VBox(12,
                 title("Carrito", 18),
@@ -228,42 +265,52 @@ public class Main extends Application {
     private VBox inventario() {
         Button add = button(icon("add") + " Nuevo producto", "dark big-button");
         add.setOnAction(e -> productModal());
-        VBox list = new VBox(10,
-                item("Arroz Costeno", "Categoria: granel | Venta por kilo, gramos o paquete", "S/ 4.20 x kg"),
-                item("Coca Cola", "Bebida 500 ml", "S/ 3.00"),
-                item("Maracuya", "Categoria: granel | Venta por kilo o gramos", "S/ 7.50 x kg")
-        );
+        VBox list = new VBox(10);
+        for (Producto producto : safeProductos(null)) {
+            list.getChildren().add(item(producto));
+        }
+        if (list.getChildren().isEmpty()) {
+            list.getChildren().add(muted("No hay productos registrados en la base de datos."));
+        }
         return page("Inventario", add, search("Buscar producto..."), list);
     }
 
     private VBox categorias() {
         Button add = button(icon("add") + " Nueva categoria", "dark big-button");
-        add.setOnAction(e -> modal("Nueva categoria", List.of("Nombre")));
+        add.setOnAction(e -> categoriaModal());
         GridPane grid = new GridPane();
         grid.setHgap(14);
         grid.setVgap(14);
-        grid.add(category("Abarrotes", "3 productos"), 0, 0);
-        grid.add(category("Bebidas", "2 productos"), 1, 0);
-        grid.add(category("Higiene personal", "2 productos"), 2, 0);
-        grid.add(category("Snack y Golosinas", "1 producto"), 0, 1);
-        return page("Categorias", add, search("Buscar categoria..."), grid);
+        List<Categoria> categorias = safeCategorias();
+        for (int i = 0; i < categorias.size(); i++) {
+            Categoria categoria = categorias.get(i);
+            grid.add(category(categoria), i % 3, i / 3);
+        }
+        Node content = categorias.isEmpty() ? muted("No hay categorias registradas en la base de datos.") : grid;
+        return page("Categorias", add, search("Buscar categoria..."), content);
     }
 
     private VBox clientes() {
         Button add = button(icon("add") + " Nuevo cliente", "dark big-button");
-        add.setOnAction(e -> modal("Nuevo cliente", List.of("Nombre", "Telefono", "Notas")));
-        HBox cards = new HBox(12,
-                client("Mario Holgado", "999 999 999", "S/ 9.00"),
-                client("Juan Perez", "987 654 321", "S/ 5.00"),
-                client("Maria Valeria", "912 456 789", "S/ 0.00")
-        );
+        add.setOnAction(e -> clienteModal());
+        HBox cards = new HBox(12);
+        for (ClienteResumen cliente : safeClientes(null)) {
+            cards.getChildren().add(client(cliente));
+        }
+        if (cards.getChildren().isEmpty()) {
+            cards.getChildren().add(muted("No hay clientes registrados en la base de datos."));
+        }
         return page("Clientes", add, search("Buscar cliente..."), cards);
     }
 
     private VBox fiados() {
         Label hint = label("Toca Registrar pago para cobrar directamente desde aqui.", "notice");
         HBox cards = new HBox(14);
+        loadDebtsFromBackend();
         for (Debt debt : debts) cards.getChildren().add(debtCard(debt));
+        if (cards.getChildren().isEmpty()) {
+            cards.getChildren().add(muted("No hay fiados pendientes en la base de datos."));
+        }
         ScrollPane scroll = new ScrollPane(cards);
         scroll.getStyleClass().add("clean-scroll");
         scroll.setFitToHeight(true);
@@ -277,10 +324,19 @@ public class Main extends Application {
         cancel.setOnAction(e -> go("Fiados"));
         Button pay = button(icon("ok") + " Confirmar pago", "primary big-button");
         pay.setOnAction(e -> {
-            selectedDebt.pending = false;
-            selectedDebt.date = "Pagado hoy";
-            notify("Pago confirmado", selectedDebt.name + " ya figura como pagado.");
-            go("Fiados");
+            try {
+                BigDecimal paid = parseMoney(amount.getText());
+                if (selectedDebt.idCredito != null) {
+                    fiadoService.registrarPago(selectedDebt.idCredito, paid, "EFECTIVO", "Pago desde frontend");
+                }
+                selectedDebt.pending = false;
+                selectedDebt.date = "Pagado hoy";
+                notify("Pago confirmado", selectedDebt.name + " ya figura como pagado.");
+                refreshBackendData();
+                go("Fiados");
+            } catch (RuntimeException ex) {
+                notify("Error de pago", shortError(ex));
+            }
         });
         VBox card = new VBox(18,
                 label(icon("money"), "pay-icon"),
@@ -297,50 +353,73 @@ public class Main extends Application {
     }
 
     private VBox reportes() {
+        ResumenReporte resumen = safeResumenHoy();
         GridPane stats = new GridPane();
         stats.setHgap(14);
-        stats.add(stat(icon("Ventas") + " Ventas", "S/ 35.50", "Hoy"), 0, 0);
-        stats.add(stat(icon("profit") + " Ganancia", "S/ 11.75", "Hoy"), 1, 0);
-        stats.add(stat(icon("Fiados") + " Fiados", "S/ 14.00", "Pendiente"), 2, 0);
-        stats.add(stat(icon("ok") + " Pagado", "S/ 12.00", "Cobrado"), 3, 0);
-        VBox sold = panel("Productos mas vendidos", row("Coca Cola", "S/ 50.00"), row("Maracuya", "S/ 10.00"), row("Arroz Costeno", "S/ 7.50"));
+        stats.add(stat(icon("Ventas") + " Ventas", money(resumen.getVentas()), "Hoy"), 0, 0);
+        stats.add(stat(icon("profit") + " Ganancia", money(resumen.getGanancia()), "Hoy"), 1, 0);
+        stats.add(stat(icon("Fiados") + " Fiados", money(resumen.getFiados()), "Pendiente"), 2, 0);
+        stats.add(stat(icon("ok") + " Pagado", money(resumen.getPagado()), "Cobrado"), 3, 0);
+        VBox sold = panel("Productos mas vendidos", soldRows(safeMasVendidos()));
         return page("Reportes", null, stats, chart(), sold);
     }
 
     private VBox abastecimiento() {
+        long[] currentSupplyId = new long[]{0L};
+        List<Producto> productos = safeProductos(null);
+
         Button supplierMode = button(icon("Clientes") + " Proveedor guardado", "primary big-button");
         supplierMode.setOnAction(e -> notify("Modo proveedor", "Registra los datos del proveedor que llega a la tienda."));
         Button marketMode = button(icon("store") + " Compra de mercado", "soft big-button");
         marketMode.setOnAction(e -> marketPurchaseModal());
         Button saveSupplier = button(icon("ok") + " Guardar proveedor", "dark big-button");
-        saveSupplier.setOnAction(e -> notify("Proveedor guardado", "El proveedor queda listo para futuros abastecimientos."));
+
+        TextField supplierName = input("Ej: Don Luis / Mercado Central");
+        TextField supplyType = input("Proveedor, mercado, distribuidora");
+        TextField contact = input("Opcional");
+        TextField receipt = input("Boleta, factura o sin comprobante");
+        TextField arrivalDate = input("Hoy");
 
         VBox supplier = new VBox(12,
                 title("Datos del ingreso", 18),
                 new HBox(10, supplierMode, marketMode),
-                field("Proveedor o lugar de compra", input("Ej: Don Luis / Mercado Central")),
-                field("Tipo de abastecimiento", input("Proveedor, mercado, distribuidora")),
-                field("Telefono o contacto", input("Opcional")),
-                field("Comprobante", input("Boleta, factura o sin comprobante")),
-                field("Fecha de llegada", input("Hoy")),
+                field("Proveedor o lugar de compra", supplierName),
+                field("Tipo de abastecimiento", supplyType),
+                field("Telefono o contacto", contact),
+                field("Comprobante", receipt),
+                field("Fecha de llegada", arrivalDate),
                 saveSupplier
         );
         supplier.getStyleClass().add("supply-form");
 
+        ComboBox<ProductChoice> productSelect = new ComboBox<>();
+        for (Producto producto : productos) {
+            productSelect.getItems().add(new ProductChoice(producto));
+        }
+        if (!productSelect.getItems().isEmpty()) {
+            productSelect.setValue(productSelect.getItems().get(0));
+        }
+        productSelect.getStyleClass().add("input");
+        TextField category = input("Granel, bebidas, limpieza...");
+        TextField quantity = input("Ej: 25 kg, 12 unidades, 6 paquetes");
+        TextField unit = input("Kilo, gramo, paquete, caja, unidad");
+        TextField cost = input("Ej: 85.00");
+        TextField salePrice = input("Ej: 4.20");
+        TextField observation = input("Ej: pago pendiente, entrega incompleta");
+
         VBox productForm = new VBox(12,
                 title("Producto que deja", 18),
-                field("Producto", input("Ej: Arroz Costeno")),
-                field("Categoria", input("Granel, bebidas, limpieza...")),
-                field("Cantidad recibida", input("Ej: 25 kg, 12 unidades, 6 paquetes")),
-                field("Unidad de compra", input("Kilo, gramo, paquete, caja, unidad")),
-                field("Costo de compra", input("Ej: S/ 85.00")),
-                field("Precio de venta", input("Ej: S/ 4.20 x kg")),
-                field("Observaciones", input("Ej: pago pendiente, entrega incompleta"))
+                field("Producto", productSelect),
+                field("Categoria", category),
+                field("Cantidad recibida", quantity),
+                field("Unidad de compra", unit),
+                field("Costo de compra", cost),
+                field("Precio de venta", salePrice),
+                field("Observaciones", observation)
         );
         productForm.getStyleClass().add("supply-form");
 
         Button addLine = button(icon("add") + " Agregar producto recibido", "soft big-button");
-        addLine.setOnAction(e -> notify("Producto agregado", "El abastecimiento quedo en la lista."));
 
         TableView<String[]> table = new TableView<>();
         String[] cols = {"Proveedor", "Producto", "Cantidad", "Unidad", "Costo", "Venta"};
@@ -351,12 +430,49 @@ public class Main extends Application {
             c.setPrefWidth(125);
             table.getColumns().add(c);
         }
-        table.getItems().addAll(List.of(
-                new String[]{"Don Luis", "Arroz Costeno", "25", "kg", "S/ 85.00", "S/ 4.20 x kg"},
-                new String[]{"Mercado Central", "Maracuya", "10", "kg", "S/ 45.00", "S/ 7.50 x kg"}
-        ));
         Button save = button(icon("ok") + " Guardar ingreso", "primary big-button");
-        save.setOnAction(e -> notify("Abastecimiento guardado", "El inventario fue actualizado."));
+        save.setOnAction(e -> {
+            Long id = guardarAbastecimiento(supplierName, supplyType, contact, receipt, observation);
+            if (id != null) {
+                currentSupplyId[0] = id;
+                notify("Abastecimiento guardado", "Ingreso #" + id + " listo para agregar productos.");
+            }
+        });
+        saveSupplier.setOnAction(save.getOnAction());
+        addLine.setOnAction(e -> {
+            if (currentSupplyId[0] == 0L) {
+                Long id = guardarAbastecimiento(supplierName, supplyType, contact, receipt, observation);
+                if (id == null) return;
+                currentSupplyId[0] = id;
+            }
+            ProductChoice selected = productSelect.getValue();
+            if (selected == null) {
+                notify("Producto requerido", "Selecciona un producto del inventario.");
+                return;
+            }
+            DetalleAbastecimiento detail = new DetalleAbastecimiento();
+            detail.setIdProducto(selected.producto.getIdProducto());
+            QuantityParts parts = parseQuantity(quantity.getText(), unit.getText());
+            detail.setCantidad(parts.amount);
+            detail.setUnidadCompra(parts.unit);
+            detail.setCostoUnitario(parseMoney(cost.getText()));
+            detail.setPrecioVenta(parseMoney(salePrice.getText()));
+            try {
+                abastecimientoService.agregarProducto(currentSupplyId[0], detail);
+                table.getItems().add(new String[]{
+                        textOrEmpty(supplierName.getText()),
+                        selected.producto.getNombre(),
+                        parts.amount.toPlainString(),
+                        parts.unit,
+                        money(detail.getCostoUnitario()),
+                        money(detail.getPrecioVenta())
+                });
+                notify("Producto agregado", "El inventario fue actualizado.");
+                refreshBackendData();
+            } catch (RuntimeException ex) {
+                notify("Error de abastecimiento", shortError(ex));
+            }
+        });
         Button clean = button("Limpiar formulario", "gray big-button");
         clean.setOnAction(e -> notify("Formulario limpio", "Puedes ingresar nuevos productos."));
         VBox total = new VBox(12,
@@ -378,7 +494,142 @@ public class Main extends Application {
     }
 
     private void productModal() {
-        modal("Nuevo producto", List.of("Nombre", "Categoria", "Tipo de venta", "Unidad base", "Equivalencia", "Precio por unidad/kg", "Costo", "Stock actual", "Stock minimo"));
+        Stage dialog = new Stage();
+        dialog.initModality(Modality.APPLICATION_MODAL);
+        dialog.initOwner(mainStage);
+
+        TextField name = input("Ej: Arroz Costeno");
+        TextField category = input("Id categoria, opcional");
+        TextField type = input("UNIDAD, GRANEL o PAQUETE");
+        TextField unit = input("UNIDAD, KG, G, PAQUETE");
+        TextField equivalence = input("1");
+        TextField salePrice = input("4.20");
+        TextField cost = input("3.50");
+        TextField stock = input("10");
+        TextField minStock = input("2");
+
+        VBox box = new VBox(12,
+                label(icon("add"), "modal-icon"),
+                title("Nuevo producto", 20),
+                field("Nombre", name),
+                field("Categoria", category),
+                field("Tipo de venta", type),
+                field("Unidad base", unit),
+                field("Equivalencia", equivalence),
+                field("Precio por unidad/kg", salePrice),
+                field("Costo", cost),
+                field("Stock actual", stock),
+                field("Stock minimo", minStock)
+        );
+        box.getStyleClass().add("modal");
+
+        Button cancel = button("Cancelar", "gray big-button");
+        cancel.setOnAction(e -> dialog.close());
+        Button save = button(icon("ok") + " Guardar", "primary big-button");
+        save.setOnAction(e -> {
+            try {
+                Producto product = new Producto();
+                product.setNombre(name.getText());
+                product.setIdCategoria(parseNullableLong(category.getText()));
+                product.setTipoVenta(emptyToDefault(type.getText(), "UNIDAD"));
+                product.setUnidadBase(emptyToDefault(unit.getText(), "UNIDAD"));
+                product.setEquivalencia(parseMoney(emptyToDefault(equivalence.getText(), "1")));
+                product.setPrecioVenta(parseMoney(salePrice.getText()));
+                product.setPrecioCompra(parseMoney(cost.getText()));
+                product.setStockActual(parseMoney(stock.getText()));
+                product.setStockMinimo(parseMoney(minStock.getText()));
+                Long id = productoService.guardarProducto(product);
+                dialog.close();
+                notify("Producto guardado", "Producto #" + id + " registrado.");
+                refreshBackendData();
+                go("Inventario");
+            } catch (RuntimeException ex) {
+                notify("Error al guardar", shortError(ex));
+            }
+        });
+        box.getChildren().add(buttons(cancel, save));
+        dialog.setTitle("Nuevo producto");
+        dialog.setScene(scene(box, 450, 650));
+        dialog.showAndWait();
+    }
+
+    private void clienteModal() {
+        Stage dialog = new Stage();
+        dialog.initModality(Modality.APPLICATION_MODAL);
+        dialog.initOwner(mainStage);
+
+        TextField name = input("Nombre completo");
+        TextField phone = input("Telefono");
+        TextField notes = input("Notas");
+        VBox box = new VBox(12,
+                label(icon("Clientes"), "modal-icon"),
+                title("Nuevo cliente", 20),
+                field("Nombre", name),
+                field("Telefono", phone),
+                field("Notas", notes)
+        );
+        box.getStyleClass().add("modal");
+
+        Button cancel = button("Cancelar", "gray big-button");
+        cancel.setOnAction(e -> dialog.close());
+        Button save = button(icon("ok") + " Guardar", "primary big-button");
+        save.setOnAction(e -> {
+            try {
+                Cliente cliente = new Cliente();
+                cliente.setNombres(name.getText());
+                cliente.setTelefono(phone.getText());
+                cliente.setNotas(notes.getText());
+                Long id = clienteService.guardarCliente(cliente);
+                dialog.close();
+                notify("Cliente guardado", "Cliente #" + id + " registrado.");
+                refreshBackendData();
+                go("Clientes");
+            } catch (RuntimeException ex) {
+                notify("Error al guardar", shortError(ex));
+            }
+        });
+        box.getChildren().add(buttons(cancel, save));
+        dialog.setTitle("Nuevo cliente");
+        dialog.setScene(scene(box, 390, 380));
+        dialog.showAndWait();
+    }
+
+    private void categoriaModal() {
+        Stage dialog = new Stage();
+        dialog.initModality(Modality.APPLICATION_MODAL);
+        dialog.initOwner(mainStage);
+
+        TextField name = input("Nombre de categoria");
+        TextField description = input("Descripcion");
+        VBox box = new VBox(12,
+                label(icon("Categorias"), "modal-icon"),
+                title("Nueva categoria", 20),
+                field("Nombre", name),
+                field("Descripcion", description)
+        );
+        box.getStyleClass().add("modal");
+
+        Button cancel = button("Cancelar", "gray big-button");
+        cancel.setOnAction(e -> dialog.close());
+        Button save = button(icon("ok") + " Guardar", "primary big-button");
+        save.setOnAction(e -> {
+            try {
+                Categoria categoria = new Categoria();
+                categoria.setNombre(name.getText());
+                categoria.setDescripcion(description.getText());
+                Long id = categoriaService.guardarCategoria(categoria);
+                dialog.close();
+                notify("Categoria guardada", "Categoria #" + id + " registrada.");
+                refreshBackendData();
+                go("Categorias");
+            } catch (RuntimeException ex) {
+                notify("Error al guardar", shortError(ex));
+            }
+        });
+        box.getChildren().add(buttons(cancel, save));
+        dialog.setTitle("Nueva categoria");
+        dialog.setScene(scene(box, 390, 330));
+        dialog.showAndWait();
     }
 
     private void marketPurchaseModal() {
@@ -437,6 +688,364 @@ public class Main extends Application {
         dialog.showAndWait();
     }
 
+    private void refreshBackendData() {
+        synchronized (cacheLock) {
+            if (backendLoading) {
+                return;
+            }
+            backendLoading = true;
+        }
+
+        Thread loader = new Thread(() -> {
+            ResumenReporte resumen = new ResumenReporte();
+            List<ProductoStockBajo> stockBajo = List.of();
+            List<ProductoVendidoReporte> masVendidos = List.of();
+            List<ClienteResumen> clientes = List.of();
+            List<Categoria> categorias = List.of();
+            List<Producto> productos = List.of();
+            List<FiadoResumen> fiados = List.of();
+            List<String> errors = new ArrayList<>();
+
+            try { resumen = reporteService.obtenerResumenHoy(); } catch (RuntimeException ex) { errors.add(shortError(ex)); }
+            try { stockBajo = productoService.listarProductosStockBajo(); } catch (RuntimeException ex) { errors.add(shortError(ex)); }
+            try { masVendidos = reporteService.listarProductosMasVendidos(5); } catch (RuntimeException ex) { errors.add(shortError(ex)); }
+            try { clientes = clienteService.buscarClientes(null); } catch (RuntimeException ex) { errors.add(shortError(ex)); }
+            try { categorias = categoriaService.listarCategoriasActivas(); } catch (RuntimeException ex) { errors.add(shortError(ex)); }
+            try { productos = productoService.buscarProductos(null); } catch (RuntimeException ex) { errors.add(shortError(ex)); }
+            try { fiados = fiadoService.listarFiadosPendientes(); } catch (RuntimeException ex) { errors.add(shortError(ex)); }
+
+            synchronized (cacheLock) {
+                cachedResumen = resumen;
+                cachedStockBajo = new ArrayList<>(stockBajo);
+                cachedMasVendidos = new ArrayList<>(masVendidos);
+                cachedClientes = new ArrayList<>(clientes);
+                cachedCategorias = new ArrayList<>(categorias);
+                cachedProductos = new ArrayList<>(productos);
+                cachedFiados = new ArrayList<>(fiados);
+                backendLoaded = true;
+                backendLoading = false;
+            }
+
+            Platform.runLater(() -> {
+                if (!errors.isEmpty()) {
+                    notify("Base de datos", errors.get(0));
+                }
+                if (app != null) {
+                    go(current);
+                }
+            });
+        });
+        loader.setDaemon(true);
+        loader.start();
+    }
+
+    private ResumenReporte safeResumenHoy() {
+        synchronized (cacheLock) {
+            return cachedResumen;
+        }
+    }
+
+    private List<ProductoStockBajo> safeStockBajo() {
+        synchronized (cacheLock) {
+            return new ArrayList<>(cachedStockBajo);
+        }
+    }
+
+    private List<ProductoVendidoReporte> safeMasVendidos() {
+        synchronized (cacheLock) {
+            return new ArrayList<>(cachedMasVendidos);
+        }
+    }
+
+    private List<ClienteResumen> safeClientes(String text) {
+        synchronized (cacheLock) {
+            if (text == null || text.isBlank()) {
+                return new ArrayList<>(cachedClientes);
+            }
+            List<ClienteResumen> filtered = new ArrayList<>();
+            for (ClienteResumen cliente : cachedClientes) {
+                if (contains(cliente.getNombres(), text) || contains(cliente.getTelefono(), text)) {
+                    filtered.add(cliente);
+                }
+            }
+            return filtered;
+        }
+    }
+
+    private List<Categoria> safeCategorias() {
+        synchronized (cacheLock) {
+            return new ArrayList<>(cachedCategorias);
+        }
+    }
+
+    private List<Producto> safeProductos(String text) {
+        synchronized (cacheLock) {
+            if (text == null || text.isBlank()) {
+                return new ArrayList<>(cachedProductos);
+            }
+            List<Producto> filtered = new ArrayList<>();
+            for (Producto producto : cachedProductos) {
+                if (contains(producto.getNombre(), text) || contains(producto.getDescripcion(), text)) {
+                    filtered.add(producto);
+                }
+            }
+            return filtered;
+        }
+    }
+
+    private Node[] stockRows(List<ProductoStockBajo> products) {
+        if (products.isEmpty()) {
+            return new Node[]{row("Stock bajo", "Sin alertas")};
+        }
+        List<Node> rows = new ArrayList<>();
+        for (ProductoStockBajo product : products) {
+            rows.add(row(product.getNombre(), product.getStockActual() + " " + product.getUnidadBase()));
+        }
+        return rows.toArray(Node[]::new);
+    }
+
+    private Node[] soldRows(List<ProductoVendidoReporte> products) {
+        if (products.isEmpty()) {
+            return new Node[]{row("Sin ventas", "S/ 0.00")};
+        }
+        List<Node> rows = new ArrayList<>();
+        for (ProductoVendidoReporte product : products) {
+            rows.add(row(product.getNombre(), money(product.getTotalVendido())));
+        }
+        return rows.toArray(Node[]::new);
+    }
+
+    private VBox product(Producto product, VBox cartItems, Label total, List<CartLine> cartLines) {
+        Button add = button(icon("add") + " Agregar", "soft");
+        add.setOnAction(e -> askQuantity(product, cartItems, total, cartLines));
+        VBox b = new VBox(
+                9,
+                title(product.getNombre(), 16),
+                muted(product.getTipoVenta() + " | Stock " + valueOrZero(product.getStockActual()) + " " + textOrEmpty(product.getUnidadBase())),
+                title(money(product.getPrecioVenta()), 15),
+                add
+        );
+        b.getStyleClass().add("card");
+        b.setPrefSize(170, 145);
+        return b;
+    }
+
+    private void askQuantity(Producto product, VBox cartItems, Label total, List<CartLine> cartLines) {
+        TextInputDialog dialog = new TextInputDialog();
+        dialog.initOwner(mainStage);
+        dialog.setTitle("Agregar producto");
+        dialog.setHeaderText(product.getNombre() + " - " + money(product.getPrecioVenta()));
+        dialog.setContentText("Cantidad:");
+        dialog.getEditor().setPromptText(productPrompt(product));
+        dialog.showAndWait().ifPresent(quantity -> {
+            QuantityParts parts = parseQuantity(quantity, product.getUnidadBase());
+            BigDecimal lineTotal = parts.normalizedFor(product).multiply(valueOrZero(product.getPrecioVenta()));
+            CartLine line = new CartLine(product, parts.amount, parts.unit, quantity.trim(), valueOrZero(product.getPrecioVenta()), lineTotal);
+            cartLines.add(line);
+            refreshCart(cartItems, total, cartLines);
+            notify("Producto agregado", product.getNombre() + " agregado al carrito.");
+        });
+    }
+
+    private void refreshCart(VBox cartItems, Label total, List<CartLine> cartLines) {
+        cartItems.getChildren().clear();
+        if (cartLines.isEmpty()) {
+            cartItems.getChildren().add(muted("Carrito vacio"));
+        } else {
+            for (CartLine line : cartLines) {
+                cartItems.getChildren().add(row(line.product.getNombre(), line.quantityText + "  " + money(line.subtotal)));
+            }
+        }
+        total.setText("Total: " + money(cartTotal(cartLines)));
+    }
+
+    private void registrarVentaDesdeCarrito(CustomerChoice customer, List<CartLine> cartLines, boolean asDebt) {
+        if (cartLines.isEmpty()) {
+            notify("Carrito vacio", "Agrega productos antes de confirmar.");
+            return;
+        }
+        if (asDebt && (customer == null || customer.idCliente == null)) {
+            notify("Cliente requerido", "Selecciona un cliente para guardar fiado.");
+            return;
+        }
+        try {
+            BigDecimal total = cartTotal(cartLines);
+            Venta sale = new Venta();
+            sale.setIdCliente(customer == null ? null : customer.idCliente);
+            sale.setCanalVenta("TIENDA");
+            sale.setTipoPago(asDebt ? "FIADO" : "CONTADO");
+            sale.setTotal(total);
+            sale.setMontoPagado(asDebt ? BigDecimal.ZERO : total);
+
+            List<DetalleVenta> details = new ArrayList<>();
+            for (CartLine line : cartLines) {
+                DetalleVenta detail = new DetalleVenta();
+                detail.setIdProducto(line.product.getIdProducto());
+                detail.setCantidad(line.quantity);
+                detail.setUnidadVenta(line.unit);
+                detail.setCantidadTexto(line.quantityText);
+                detail.setPrecioUnitario(line.unitPrice);
+                details.add(detail);
+            }
+
+            if (asDebt) {
+                ventaService.guardarVentaComoFiado(sale, details, LocalDate.now().plusDays(7), "Fiado registrado desde frontend");
+                notify("Fiado agregado", "La venta paso a la lista de Fiados.");
+                refreshBackendData();
+                go("Fiados");
+            } else {
+                Long id = ventaService.registrarVentaConDetalles(sale, details);
+                notify("Venta registrada", "Venta #" + id + " guardada correctamente.");
+                refreshBackendData();
+                go("Ventas");
+            }
+        } catch (RuntimeException ex) {
+            notify("Error de venta", shortError(ex));
+        }
+    }
+
+    private Long guardarAbastecimiento(TextField supplierName, TextField supplyType, TextField contact, TextField receipt, TextField observation) {
+        try {
+            Abastecimiento supply = new Abastecimiento();
+            supply.setProveedor(supplierName.getText());
+            supply.setLugarCompra(supplierName.getText());
+            supply.setTipoAbastecimiento(emptyToDefault(supplyType.getText(), "PROVEEDOR"));
+            supply.setContacto(contact.getText());
+            supply.setComprobante(receipt.getText());
+            supply.setObservacion(observation.getText());
+            return abastecimientoService.guardarAbastecimiento(supply);
+        } catch (RuntimeException ex) {
+            notify("Error de abastecimiento", shortError(ex));
+            return null;
+        }
+    }
+
+    private void loadDebtsFromBackend() {
+        synchronized (cacheLock) {
+            debts.clear();
+            for (FiadoResumen debt : cachedFiados) {
+                debts.add(new Debt(
+                        debt.getIdCredito(),
+                        debt.getCliente(),
+                        debt.getFechaCredito() == null ? "Pendiente" : debt.getFechaCredito().toLocalDate().toString(),
+                        money(debt.getSaldoPendiente()),
+                        true
+                ));
+            }
+        }
+    }
+
+    private HBox item(Producto product) {
+        String detail = product.getTipoVenta() + " | Stock " + valueOrZero(product.getStockActual()) + " " + textOrEmpty(product.getUnidadBase());
+        HBox row = item(product.getNombre(), detail, money(product.getPrecioVenta()));
+        Button delete = findButton(row, "Eliminar");
+        if (delete != null && product.getIdProducto() != null) {
+            delete.setOnAction(e -> {
+                try {
+                    productoService.cambiarEstadoProducto(product.getIdProducto(), false);
+                    notify("Producto eliminado", product.getNombre() + " fue desactivado.");
+                    refreshBackendData();
+                    go("Inventario");
+                } catch (RuntimeException ex) {
+                    notify("Error al eliminar", shortError(ex));
+                }
+            });
+        }
+        return row;
+    }
+
+    private VBox category(Categoria category) {
+        return category(category.getNombre(), textOrEmpty(category.getDescripcion()));
+    }
+
+    private VBox client(ClienteResumen cliente) {
+        return client(cliente.getNombres(), textOrEmpty(cliente.getTelefono()), money(cliente.getSaldoFiado()));
+    }
+
+    private Button findButton(HBox row, String text) {
+        for (Node node : row.getChildren()) {
+            if (node instanceof HBox actions) {
+                for (Node child : actions.getChildren()) {
+                    if (child instanceof Button button && button.getText().equals(text)) {
+                        return button;
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    private String productPrompt(Producto product) {
+        String unit = textOrEmpty(product.getUnidadBase()).toUpperCase();
+        if ("KG".equals(unit) || "KILO".equals(unit)) return "Ej: 500 g o 2 kg";
+        return "Ej: 1 unidad";
+    }
+
+    private BigDecimal cartTotal(List<CartLine> cartLines) {
+        BigDecimal total = BigDecimal.ZERO;
+        for (CartLine line : cartLines) {
+            total = total.add(line.subtotal);
+        }
+        return total;
+    }
+
+    private QuantityParts parseQuantity(String raw, String defaultUnit) {
+        String clean = emptyToDefault(raw, "1").trim().toLowerCase();
+        String[] parts = clean.split("\\s+");
+        BigDecimal amount = parseMoney(parts[0]);
+        String unit = parts.length > 1 ? parts[1] : emptyToDefault(defaultUnit, "UNIDAD");
+        return new QuantityParts(amount, normalizeUnit(unit));
+    }
+
+    private String normalizeUnit(String unit) {
+        String clean = emptyToDefault(unit, "UNIDAD").trim().toUpperCase();
+        return switch (clean) {
+            case "KILO", "KILOS" -> "KG";
+            case "GRAMO", "GRAMOS" -> "G";
+            case "UNIDADES" -> "UNIDAD";
+            default -> clean;
+        };
+    }
+
+    private BigDecimal parseMoney(String value) {
+        String clean = emptyToDefault(value, "0")
+                .replace("S/", "")
+                .replace(",", ".")
+                .trim();
+        return new BigDecimal(clean.isBlank() ? "0" : clean);
+    }
+
+    private Long parseNullableLong(String value) {
+        String clean = textOrEmpty(value).trim();
+        return clean.isBlank() ? null : Long.parseLong(clean);
+    }
+
+    private String money(BigDecimal value) {
+        return "S/ " + valueOrZero(value).setScale(2, RoundingMode.HALF_UP);
+    }
+
+    private BigDecimal valueOrZero(BigDecimal value) {
+        return value == null ? BigDecimal.ZERO : value;
+    }
+
+    private String textOrEmpty(String value) {
+        return value == null ? "" : value;
+    }
+
+    private String emptyToDefault(String value, String defaultValue) {
+        return value == null || value.isBlank() ? defaultValue : value;
+    }
+
+    private boolean contains(String source, String text) {
+        return source != null && text != null && source.toLowerCase().contains(text.toLowerCase());
+    }
+
+    private String shortError(RuntimeException ex) {
+        String message = ex.getMessage();
+        if (message == null || message.isBlank()) return "Revisa la conexion con la base de datos.";
+        return message.length() > 90 ? message.substring(0, 90) + "..." : message;
+    }
+
     private VBox page(String pageTitle, Button action, Node... nodes) {
         VBox page = new VBox(18);
         page.getStyleClass().add("page");
@@ -455,30 +1064,6 @@ public class Main extends Application {
         return b;
     }
 
-    private VBox product(String name, String price, String detail, String prompt, VBox cartItems, Label total) {
-        Button add = button(icon("add") + " Agregar", "soft");
-        add.setOnAction(e -> askQuantity(name, price, prompt, cartItems, total));
-        VBox b = new VBox(9, title(name, 16), muted(detail), muted("Stock disponible"), title(price, 15), add);
-        b.getStyleClass().add("card");
-        b.setPrefSize(170, 135);
-        return b;
-    }
-
-    private void askQuantity(String name, String price, String prompt, VBox cartItems, Label total) {
-        TextInputDialog dialog = new TextInputDialog();
-        dialog.initOwner(mainStage);
-        dialog.setTitle("Agregar producto");
-        dialog.setHeaderText(name + " - " + price);
-        dialog.setContentText("Cantidad:");
-        dialog.getEditor().setPromptText(prompt);
-        dialog.showAndWait().ifPresent(quantity -> {
-            String clean = quantity.trim().isEmpty() ? prompt.replace("Ej: ", "") : quantity.trim();
-            cartItems.getChildren().add(row(name, clean + "  " + price));
-            total.setText("Total actualizado");
-            notify("Producto agregado", name + " agregado: " + clean + ".");
-        });
-    }
-
     private ScrollPane scrollable(Node content) {
         ScrollPane scroll = new ScrollPane(content);
         scroll.getStyleClass().add("main-scroll");
@@ -493,7 +1078,7 @@ public class Main extends Application {
         Button edit = button("Editar", "soft");
         edit.setOnAction(e -> notify("Editar producto", "Abriendo ficha de " + name + "."));
         Button delete = button("Eliminar", "gray");
-        delete.setOnAction(e -> notify("Aviso", name + " no se elimina porque es demo frontend."));
+        delete.setOnAction(e -> notify("Aviso", "Selecciona un producto guardado para desactivarlo."));
         HBox actions = new HBox(8, edit, delete);
         VBox text = new VBox(4, title(name, 16), muted(detail));
         HBox row = new HBox(12, text, grow(), title(price, 16), actions);
@@ -566,13 +1151,6 @@ public class Main extends Application {
         c.setAnimated(false);
         c.setPrefHeight(260);
         c.getStyleClass().add("chart");
-        XYChart.Series<String, Number> s = new XYChart.Series<>();
-        s.getData().add(new XYChart.Data<>("Lun", 4));
-        s.getData().add(new XYChart.Data<>("Mar", 9));
-        s.getData().add(new XYChart.Data<>("Mie", 14));
-        s.getData().add(new XYChart.Data<>("Jue", 18));
-        s.getData().add(new XYChart.Data<>("Vie", 25));
-        c.getData().add(s);
         return c;
     }
 
@@ -668,16 +1246,93 @@ public class Main extends Application {
     }
 
     private static class Debt {
+        private final Long idCredito;
         private final String name;
         private String date;
         private final String amount;
         private boolean pending;
 
         private Debt(String name, String date, String amount, boolean pending) {
+            this(null, name, date, amount, pending);
+        }
+
+        private Debt(Long idCredito, String name, String date, String amount, boolean pending) {
+            this.idCredito = idCredito;
             this.name = name;
             this.date = date;
             this.amount = amount;
             this.pending = pending;
+        }
+    }
+
+    private static class CustomerChoice {
+        private final Long idCliente;
+        private final String name;
+        private final String telefono;
+        private final BigDecimal saldoFiado;
+
+        private CustomerChoice(Long idCliente, String name, String telefono, BigDecimal saldoFiado) {
+            this.idCliente = idCliente;
+            this.name = name;
+            this.telefono = telefono;
+            this.saldoFiado = saldoFiado;
+        }
+
+        @Override
+        public String toString() {
+            return name;
+        }
+    }
+
+    private static class ProductChoice {
+        private final Producto producto;
+
+        private ProductChoice(Producto producto) {
+            this.producto = producto;
+        }
+
+        @Override
+        public String toString() {
+            return producto.getNombre();
+        }
+    }
+
+    private static class CartLine {
+        private final Producto product;
+        private final BigDecimal quantity;
+        private final String unit;
+        private final String quantityText;
+        private final BigDecimal unitPrice;
+        private final BigDecimal subtotal;
+
+        private CartLine(Producto product, BigDecimal quantity, String unit, String quantityText, BigDecimal unitPrice, BigDecimal subtotal) {
+            this.product = product;
+            this.quantity = quantity;
+            this.unit = unit;
+            this.quantityText = quantityText;
+            this.unitPrice = unitPrice;
+            this.subtotal = subtotal;
+        }
+    }
+
+    private static class QuantityParts {
+        private final BigDecimal amount;
+        private final String unit;
+
+        private QuantityParts(BigDecimal amount, String unit) {
+            this.amount = amount;
+            this.unit = unit;
+        }
+
+        private BigDecimal normalizedFor(Producto product) {
+            String base = product.getUnidadBase() == null ? "UNIDAD" : product.getUnidadBase().toUpperCase();
+            if (("KG".equals(base) || "KILO".equals(base)) && "G".equals(unit)) {
+                return amount.divide(new BigDecimal("1000"), 3, RoundingMode.HALF_UP);
+            }
+            if ("G".equals(base) && "KG".equals(unit)) {
+                return amount.multiply(new BigDecimal("1000"));
+            }
+            return amount;
         }
     }
 }
