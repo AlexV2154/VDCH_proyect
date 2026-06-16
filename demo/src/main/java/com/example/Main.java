@@ -58,7 +58,7 @@ public class Main extends Application {
         VBox brand = new VBox(14);
         brand.setAlignment(Pos.CENTER);
         brand.getStyleClass().add("brand-panel");
-        ImageView logo = new ImageView(new Image("file:C:/Users/sozha/OneDrive/Documentos/demo/_docx_reference/unzipped/word/media/image14.png", true));
+        ImageView logo = new ImageView(new Image("file:C:/Users/sozha/OneDrive/Documentos/demo/_docx_reference/unzipped/word/media/image14.png", true)); //Cambiar ruta de
         logo.setFitWidth(138);
         logo.setFitHeight(138);
         logo.setPreserveRatio(true);
@@ -75,7 +75,6 @@ public class Main extends Application {
         enter.setOnAction(e -> openApp(stage));
         form.getChildren().addAll(
                 title("Iniciar sesion", 24),
-                muted("Pantalla clara y sencilla para atender la tienda sin complicaciones."),
                 field("Usuario", user),
                 field("Contrasena", pass),
                 enter
