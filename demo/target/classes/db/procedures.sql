@@ -499,9 +499,13 @@ CREATE OR REPLACE FUNCTION fn_buscar_productos(
     descripcion TEXT,
     tipo_venta VARCHAR,
     unidad_base VARCHAR,
+    equivalencia NUMERIC,
+    precio_compra NUMERIC,
     precio_venta NUMERIC,
     stock_actual NUMERIC,
-    stock_minimo NUMERIC
+    stock_minimo NUMERIC,
+    fecha_vencimiento DATE,
+    estado BOOLEAN
 )
 LANGUAGE sql
 AS $$
@@ -512,9 +516,13 @@ AS $$
         p.descripcion,
         p.tipo_venta,
         p.unidad_base,
+        p.equivalencia,
+        p.precio_compra,
         p.precio_venta,
         p.stock_actual,
-        p.stock_minimo
+        p.stock_minimo,
+        p.fecha_vencimiento,
+        p.estado
     FROM productos p
     WHERE p.estado = TRUE
       AND (

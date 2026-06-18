@@ -553,6 +553,47 @@ public class Main extends Application {
         dialog.showAndWait();
     }
 
+    private void productInfoModal(Producto product) {
+        Stage dialog = new Stage();
+        dialog.initModality(Modality.APPLICATION_MODAL);
+        dialog.initOwner(mainStage);
+
+        Label sizeInfo = label(sizeGuide(product), "product-size-info");
+        sizeInfo.setWrapText(true);
+        sizeInfo.setVisible(false);
+        sizeInfo.setManaged(false);
+
+        Button sizeButton = button("Ver talle", "soft big-button");
+        sizeButton.setOnAction(e -> {
+            boolean show = !sizeInfo.isVisible();
+            sizeInfo.setVisible(show);
+            sizeInfo.setManaged(show);
+            sizeButton.setText(show ? "Ocultar talle" : "Ver talle");
+        });
+
+        VBox box = new VBox(12,
+                label(icon("Inventario"), "modal-icon"),
+                title(product.getNombre(), 22),
+                label(productSummary(product), "notice-small"),
+                productInfoGrid(product),
+                sizeButton,
+                sizeInfo
+        );
+        box.getStyleClass().add("modal");
+
+        Button close = button("Cerrar", "gray big-button");
+        close.setOnAction(e -> dialog.close());
+        box.getChildren().add(buttons(close, button("Listo", "primary big-button")));
+        Button ready = findButtonInBox(box, "Listo");
+        if (ready != null) {
+            ready.setOnAction(e -> dialog.close());
+        }
+
+        dialog.setTitle("Detalle de producto");
+        dialog.setScene(scene(box, 500, 620));
+        dialog.showAndWait();
+    }
+
     private void clienteModal() {
         Stage dialog = new Stage();
         dialog.initModality(Modality.APPLICATION_MODAL);
@@ -706,13 +747,13 @@ public class Main extends Application {
             List<FiadoResumen> fiados = List.of();
             List<String> errors = new ArrayList<>();
 
-            try { resumen = reporteService.obtenerResumenHoy(); } catch (RuntimeException ex) { errors.add(shortError(ex)); }
-            try { stockBajo = productoService.listarProductosStockBajo(); } catch (RuntimeException ex) { errors.add(shortError(ex)); }
-            try { masVendidos = reporteService.listarProductosMasVendidos(5); } catch (RuntimeException ex) { errors.add(shortError(ex)); }
-            try { clientes = clienteService.buscarClientes(null); } catch (RuntimeException ex) { errors.add(shortError(ex)); }
-            try { categorias = categoriaService.listarCategoriasActivas(); } catch (RuntimeException ex) { errors.add(shortError(ex)); }
-            try { productos = productoService.buscarProductos(null); } catch (RuntimeException ex) { errors.add(shortError(ex)); }
-            try { fiados = fiadoService.listarFiadosPendientes(); } catch (RuntimeException ex) { errors.add(shortError(ex)); }
+            try { resumen = reporteService.obtenerResumenHoy(); } catch (Throwable ex) { errors.add(shortError(ex)); }
+            try { stockBajo = productoService.listarProductosStockBajo(); } catch (Throwable ex) { errors.add(shortError(ex)); }
+            try { masVendidos = reporteService.listarProductosMasVendidos(5); } catch (Throwable ex) { errors.add(shortError(ex)); }
+            try { clientes = clienteService.buscarClientes(null); } catch (Throwable ex) { errors.add(shortError(ex)); }
+            try { categorias = categoriaService.listarCategoriasActivas(); } catch (Throwable ex) { errors.add(shortError(ex)); }
+            try { productos = productoService.buscarProductos(null); } catch (Throwable ex) { errors.add(shortError(ex)); }
+            try { fiados = fiadoService.listarFiadosPendientes(); } catch (Throwable ex) { errors.add(shortError(ex)); }
 
             synchronized (cacheLock) {
                 cachedResumen = resumen;
@@ -938,6 +979,10 @@ public class Main extends Application {
     private HBox item(Producto product) {
         String detail = product.getTipoVenta() + " | Stock " + valueOrZero(product.getStockActual()) + " " + textOrEmpty(product.getUnidadBase());
         HBox row = item(product.getNombre(), detail, money(product.getPrecioVenta()));
+        Button edit = findButton(row, "Editar");
+        if (edit != null) {
+            edit.setOnAction(e -> productInfoModal(product));
+        }
         Button delete = findButton(row, "Eliminar");
         if (delete != null && product.getIdProducto() != null) {
             delete.setOnAction(e -> {
@@ -952,6 +997,61 @@ public class Main extends Application {
             });
         }
         return row;
+    }
+
+    private GridPane productInfoGrid(Producto product) {
+        GridPane grid = new GridPane();
+        grid.setHgap(10);
+        grid.setVgap(10);
+        grid.getStyleClass().add("product-info-grid");
+        addInfo(grid, 0, "Codigo", product.getIdProducto() == null ? "Sin codigo" : "#" + product.getIdProducto());
+        addInfo(grid, 1, "Tipo de venta", textOrEmpty(product.getTipoVenta()));
+        addInfo(grid, 2, "Unidad base", textOrEmpty(product.getUnidadBase()));
+        addInfo(grid, 3, "Equivalencia", valueOrZero(product.getEquivalencia()).toPlainString());
+        addInfo(grid, 4, "Precio venta", money(product.getPrecioVenta()));
+        addInfo(grid, 5, "Costo", money(product.getPrecioCompra()));
+        addInfo(grid, 6, "Stock actual", valueOrZero(product.getStockActual()) + " " + textOrEmpty(product.getUnidadBase()));
+        addInfo(grid, 7, "Stock minimo", valueOrZero(product.getStockMinimo()) + " " + textOrEmpty(product.getUnidadBase()));
+        addInfo(grid, 8, "Vencimiento", product.getFechaVencimiento() == null ? "No registrado" : product.getFechaVencimiento().toString());
+        addInfo(grid, 9, "Estado", product.isEstado() ? "Activo" : "Inactivo");
+        addInfo(grid, 10, "Descripcion", textOrEmpty(product.getDescripcion()).isBlank() ? "Sin descripcion" : product.getDescripcion());
+        return grid;
+    }
+
+    private void addInfo(GridPane grid, int row, String name, String value) {
+        Label key = label(name, "product-info-key");
+        Label val = label(emptyToDefault(value, "No registrado"), "product-info-value");
+        val.setWrapText(true);
+        grid.add(key, 0, row);
+        grid.add(val, 1, row);
+    }
+
+    private String productSummary(Producto product) {
+        return "Stock " + valueOrZero(product.getStockActual()) + " " + textOrEmpty(product.getUnidadBase())
+                + " | Precio " + money(product.getPrecioVenta());
+    }
+
+    private String sizeGuide(Producto product) {
+        String unit = textOrEmpty(product.getUnidadBase()).toUpperCase();
+        if ("KG".equals(unit) || "G".equals(unit) || "KILO".equals(unit)) {
+            return "Info de talle: este producto se vende por peso. Usa el campo de cantidad como 500 g, 1 kg o 2 kg segun lo que pida el cliente.";
+        }
+        if ("PAQUETE".equals(unit) || "CAJA".equals(unit)) {
+            return "Info de talle: registra el tamano del paquete o caja en la descripcion del producto. Ejemplo: paquete chico, mediano, grande o caja x12.";
+        }
+        return "Info de talle: talles sugeridos S, M, L y XL. Agrega el talle exacto en la descripcion del producto para que aparezca en esta ficha.";
+    }
+
+    private Button findButtonInBox(VBox box, String text) {
+        for (Node node : box.getChildren()) {
+            if (node instanceof HBox row) {
+                Button button = findButton(row, text);
+                if (button != null) {
+                    return button;
+                }
+            }
+        }
+        return null;
     }
 
     private VBox category(Categoria category) {
@@ -1040,7 +1140,7 @@ public class Main extends Application {
         return source != null && text != null && source.toLowerCase().contains(text.toLowerCase());
     }
 
-    private String shortError(RuntimeException ex) {
+    private String shortError(Throwable ex) {
         String message = ex.getMessage();
         if (message == null || message.isBlank()) return "Revisa la conexion con la base de datos.";
         return message.length() > 90 ? message.substring(0, 90) + "..." : message;

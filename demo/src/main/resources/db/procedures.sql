@@ -490,6 +490,8 @@ BEGIN
 END;
 $$;
 
+DROP FUNCTION IF EXISTS fn_buscar_productos(VARCHAR);
+
 CREATE OR REPLACE FUNCTION fn_buscar_productos(
     p_texto VARCHAR
 ) RETURNS TABLE (
@@ -499,9 +501,13 @@ CREATE OR REPLACE FUNCTION fn_buscar_productos(
     descripcion TEXT,
     tipo_venta VARCHAR,
     unidad_base VARCHAR,
+    equivalencia NUMERIC,
+    precio_compra NUMERIC,
     precio_venta NUMERIC,
     stock_actual NUMERIC,
-    stock_minimo NUMERIC
+    stock_minimo NUMERIC,
+    fecha_vencimiento DATE,
+    estado BOOLEAN
 )
 LANGUAGE sql
 AS $$
@@ -512,9 +518,13 @@ AS $$
         p.descripcion,
         p.tipo_venta,
         p.unidad_base,
+        p.equivalencia,
+        p.precio_compra,
         p.precio_venta,
         p.stock_actual,
-        p.stock_minimo
+        p.stock_minimo,
+        p.fecha_vencimiento,
+        p.estado
     FROM productos p
     WHERE p.estado = TRUE
       AND (
@@ -524,6 +534,8 @@ AS $$
       )
     ORDER BY p.nombre;
 $$;
+
+DROP FUNCTION IF EXISTS fn_listar_categorias();
 
 CREATE OR REPLACE FUNCTION fn_listar_categorias()
 RETURNS TABLE (
@@ -543,6 +555,8 @@ AS $$
     WHERE estado = TRUE
     ORDER BY nombre;
 $$;
+
+DROP FUNCTION IF EXISTS fn_buscar_clientes(VARCHAR);
 
 CREATE OR REPLACE FUNCTION fn_buscar_clientes(
     p_texto VARCHAR
@@ -614,6 +628,8 @@ BEGIN
 END;
 $$;
 
+DROP FUNCTION IF EXISTS fn_listar_fiados();
+
 CREATE OR REPLACE FUNCTION fn_listar_fiados()
 RETURNS TABLE (
     id_credito BIGINT,
@@ -643,6 +659,8 @@ AS $$
     WHERE cr.estado IN ('PENDIENTE', 'VENCIDO')
     ORDER BY cr.fecha_credito DESC;
 $$;
+
+DROP FUNCTION IF EXISTS fn_resumen_hoy();
 
 CREATE OR REPLACE FUNCTION fn_resumen_hoy()
 RETURNS TABLE (
@@ -681,6 +699,8 @@ AS $$
     CROSS JOIN ganancias g;
 $$;
 
+DROP FUNCTION IF EXISTS fn_productos_mas_vendidos(INTEGER);
+
 CREATE OR REPLACE FUNCTION fn_productos_mas_vendidos(
     p_limite INTEGER DEFAULT 5
 ) RETURNS TABLE (
@@ -704,6 +724,8 @@ AS $$
     ORDER BY cantidad_vendida DESC, total_vendido DESC
     LIMIT p_limite;
 $$;
+
+DROP FUNCTION IF EXISTS fn_productos_stock_bajo();
 
 CREATE OR REPLACE FUNCTION fn_productos_stock_bajo()
 RETURNS TABLE (
