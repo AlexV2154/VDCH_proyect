@@ -11,6 +11,8 @@ public class FiadoResumen {
     private String telefono;
     private BigDecimal montoTotal;
     private BigDecimal saldoPendiente;
+    private BigDecimal interesGenerado;
+    private int diasVencidos;
     private String estado;
     private LocalDateTime fechaCredito;
     private LocalDate fechaLimite;
@@ -61,6 +63,22 @@ public class FiadoResumen {
 
     public void setSaldoPendiente(BigDecimal saldoPendiente) {
         this.saldoPendiente = saldoPendiente;
+    }
+
+    public BigDecimal getInteresGenerado() {
+        return interesGenerado;
+    }
+
+    public void setInteresGenerado(BigDecimal interesGenerado) {
+        this.interesGenerado = interesGenerado;
+    }
+
+    public int getDiasVencidos() {
+        return diasVencidos;
+    }
+
+    public void setDiasVencidos(int diasVencidos) {
+        this.diasVencidos = diasVencidos;
     }
 
     public String getEstado() {

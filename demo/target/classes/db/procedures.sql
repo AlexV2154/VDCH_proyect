@@ -28,6 +28,59 @@ BEGIN
 END;
 $$;
 
+DROP FUNCTION IF EXISTS fn_dias_interes_credito(TIMESTAMP, DATE);
+
+CREATE OR REPLACE FUNCTION fn_dias_interes_credito(
+    p_fecha_credito TIMESTAMP,
+    p_fecha_limite DATE
+) RETURNS INTEGER
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_inicio DATE;
+    v_dias INTEGER;
+BEGIN
+    v_inicio := COALESCE(p_fecha_limite, (p_fecha_credito::date + INTERVAL '7 days')::date);
+    v_dias := CURRENT_DATE - v_inicio;
+    RETURN GREATEST(v_dias, 0);
+END;
+$$;
+
+DROP FUNCTION IF EXISTS fn_interes_credito(NUMERIC, TIMESTAMP, DATE);
+
+CREATE OR REPLACE FUNCTION fn_interes_credito(
+    p_saldo NUMERIC,
+    p_fecha_credito TIMESTAMP,
+    p_fecha_limite DATE
+) RETURNS NUMERIC
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_dias INTEGER;
+    v_semanas INTEGER;
+BEGIN
+    v_dias := fn_dias_interes_credito(p_fecha_credito, p_fecha_limite);
+    IF v_dias <= 0 THEN
+        RETURN 0;
+    END IF;
+
+    v_semanas := CEIL(v_dias / 7.0);
+    RETURN ROUND(COALESCE(p_saldo, 0) * 0.02 * v_semanas, 2);
+END;
+$$;
+
+DROP FUNCTION IF EXISTS fn_saldo_credito_con_interes(NUMERIC, TIMESTAMP, DATE);
+
+CREATE OR REPLACE FUNCTION fn_saldo_credito_con_interes(
+    p_saldo NUMERIC,
+    p_fecha_credito TIMESTAMP,
+    p_fecha_limite DATE
+) RETURNS NUMERIC
+LANGUAGE sql
+AS $$
+    SELECT ROUND(COALESCE(p_saldo, 0) + fn_interes_credito(p_saldo, p_fecha_credito, p_fecha_limite), 2);
+$$;
+
 CREATE OR REPLACE FUNCTION sp_guardar_cliente(
     p_id_cliente BIGINT,
     p_nombres VARCHAR,
@@ -209,8 +262,29 @@ DECLARE
     v_subtotal NUMERIC;
     v_total NUMERIC;
     v_pagado NUMERIC;
+    v_stock_actual NUMERIC;
+    v_nombre_producto VARCHAR;
 BEGIN
     v_cantidad_stock := fn_normalizar_cantidad(p_id_producto, p_cantidad, p_unidad_venta);
+
+    SELECT nombre, stock_actual
+    INTO v_nombre_producto, v_stock_actual
+    FROM productos
+    WHERE id_producto = p_id_producto
+    FOR UPDATE;
+
+    IF v_stock_actual IS NULL THEN
+        RAISE EXCEPTION 'Producto no encontrado.';
+    END IF;
+
+    IF v_stock_actual <= 0 THEN
+        RAISE EXCEPTION 'El producto % no tiene stock disponible.', v_nombre_producto;
+    END IF;
+
+    IF v_cantidad_stock > v_stock_actual THEN
+        RAISE EXCEPTION 'Stock insuficiente para %. Disponible: %.', v_nombre_producto, v_stock_actual;
+    END IF;
+
     v_subtotal := v_cantidad_stock * p_precio_unitario;
 
     INSERT INTO detalle_ventas (
@@ -322,7 +396,36 @@ DECLARE
     v_id_pago BIGINT;
     v_id_venta BIGINT;
     v_saldo NUMERIC;
+    v_interes NUMERIC;
 BEGIN
+    SELECT
+        id_venta,
+        fn_saldo_credito_con_interes(saldo_pendiente, fecha_credito, fecha_limite),
+        fn_interes_credito(saldo_pendiente, fecha_credito, fecha_limite)
+    INTO v_id_venta, v_saldo, v_interes
+    FROM creditos
+    WHERE id_credito = p_id_credito
+    FOR UPDATE;
+
+    IF v_saldo IS NULL THEN
+        RAISE EXCEPTION 'Credito no encontrado.';
+    END IF;
+
+    IF COALESCE(p_monto_pagado, 0) <= 0 THEN
+        RAISE EXCEPTION 'El pago debe ser mayor a cero.';
+    END IF;
+
+    IF p_monto_pagado > v_saldo THEN
+        RAISE EXCEPTION 'El pago no puede ser mayor al saldo pendiente. Saldo: %.', v_saldo;
+    END IF;
+
+    IF v_interes > 0 THEN
+        UPDATE creditos
+        SET saldo_pendiente = v_saldo,
+            estado = 'VENCIDO'
+        WHERE id_credito = p_id_credito;
+    END IF;
+
     INSERT INTO pagos_credito (
         id_credito,
         monto_pagado,
@@ -338,10 +441,14 @@ BEGIN
     RETURNING id_pago_credito INTO v_id_pago;
 
     UPDATE creditos
-    SET saldo_pendiente = GREATEST(saldo_pendiente - p_monto_pagado, 0),
-        estado = CASE WHEN saldo_pendiente - p_monto_pagado <= 0 THEN 'PAGADO' ELSE 'PENDIENTE' END
+        SET saldo_pendiente = GREATEST(v_saldo - p_monto_pagado, 0),
+        estado = CASE
+            WHEN v_saldo - p_monto_pagado <= 0 THEN 'PAGADO'
+            WHEN v_interes > 0 THEN 'VENCIDO'
+            ELSE 'PENDIENTE'
+        END
     WHERE id_credito = p_id_credito
-    RETURNING id_venta, saldo_pendiente INTO v_id_venta, v_saldo;
+    RETURNING saldo_pendiente INTO v_saldo;
 
     UPDATE ventas
     SET monto_pagado = LEAST(total, monto_pagado + p_monto_pagado),
@@ -490,6 +597,8 @@ BEGIN
 END;
 $$;
 
+DROP FUNCTION IF EXISTS fn_buscar_productos(VARCHAR);
+
 CREATE OR REPLACE FUNCTION fn_buscar_productos(
     p_texto VARCHAR
 ) RETURNS TABLE (
@@ -533,6 +642,8 @@ AS $$
     ORDER BY p.nombre;
 $$;
 
+DROP FUNCTION IF EXISTS fn_listar_categorias();
+
 CREATE OR REPLACE FUNCTION fn_listar_categorias()
 RETURNS TABLE (
     id_categoria BIGINT,
@@ -552,6 +663,8 @@ AS $$
     ORDER BY nombre;
 $$;
 
+DROP FUNCTION IF EXISTS fn_buscar_clientes(VARCHAR);
+
 CREATE OR REPLACE FUNCTION fn_buscar_clientes(
     p_texto VARCHAR
 ) RETURNS TABLE (
@@ -570,7 +683,7 @@ AS $$
         c.telefono,
         c.direccion,
         c.notas,
-        COALESCE(SUM(cr.saldo_pendiente) FILTER (WHERE cr.estado = 'PENDIENTE'), 0) AS saldo_fiado
+        COALESCE(SUM(fn_saldo_credito_con_interes(cr.saldo_pendiente, cr.fecha_credito, cr.fecha_limite)) FILTER (WHERE cr.estado IN ('PENDIENTE', 'VENCIDO')), 0) AS saldo_fiado
     FROM clientes c
     LEFT JOIN creditos cr ON cr.id_cliente = c.id_cliente
     WHERE c.estado = TRUE
@@ -622,6 +735,8 @@ BEGIN
 END;
 $$;
 
+DROP FUNCTION IF EXISTS fn_listar_fiados();
+
 CREATE OR REPLACE FUNCTION fn_listar_fiados()
 RETURNS TABLE (
     id_credito BIGINT,
@@ -630,6 +745,8 @@ RETURNS TABLE (
     telefono VARCHAR,
     monto_total NUMERIC,
     saldo_pendiente NUMERIC,
+    interes_generado NUMERIC,
+    dias_vencidos INTEGER,
     estado VARCHAR,
     fecha_credito TIMESTAMP,
     fecha_limite DATE
@@ -642,8 +759,13 @@ AS $$
         c.nombres AS cliente,
         c.telefono,
         cr.monto_total,
-        cr.saldo_pendiente,
-        cr.estado,
+        fn_saldo_credito_con_interes(cr.saldo_pendiente, cr.fecha_credito, cr.fecha_limite) AS saldo_pendiente,
+        fn_interes_credito(cr.saldo_pendiente, cr.fecha_credito, cr.fecha_limite) AS interes_generado,
+        fn_dias_interes_credito(cr.fecha_credito, cr.fecha_limite) AS dias_vencidos,
+        CASE
+            WHEN fn_interes_credito(cr.saldo_pendiente, cr.fecha_credito, cr.fecha_limite) > 0 THEN 'VENCIDO'
+            ELSE cr.estado
+        END AS estado,
         cr.fecha_credito,
         cr.fecha_limite
     FROM creditos cr
@@ -651,6 +773,8 @@ AS $$
     WHERE cr.estado IN ('PENDIENTE', 'VENCIDO')
     ORDER BY cr.fecha_credito DESC;
 $$;
+
+DROP FUNCTION IF EXISTS fn_resumen_hoy();
 
 CREATE OR REPLACE FUNCTION fn_resumen_hoy()
 RETURNS TABLE (
@@ -689,6 +813,8 @@ AS $$
     CROSS JOIN ganancias g;
 $$;
 
+DROP FUNCTION IF EXISTS fn_productos_mas_vendidos(INTEGER);
+
 CREATE OR REPLACE FUNCTION fn_productos_mas_vendidos(
     p_limite INTEGER DEFAULT 5
 ) RETURNS TABLE (
@@ -712,6 +838,8 @@ AS $$
     ORDER BY cantidad_vendida DESC, total_vendido DESC
     LIMIT p_limite;
 $$;
+
+DROP FUNCTION IF EXISTS fn_productos_stock_bajo();
 
 CREATE OR REPLACE FUNCTION fn_productos_stock_bajo()
 RETURNS TABLE (

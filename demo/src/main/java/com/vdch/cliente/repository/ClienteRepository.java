@@ -44,7 +44,25 @@ public class ClienteRepository {
             String filter = texto == null || texto.isBlank() ? null : "%" + texto + "%";
             return executor.querySql("""
                     SELECT c.id_cliente, c.nombres, c.telefono, c.direccion, c.notas,
-                           COALESCE(SUM(cr.saldo_pendiente) FILTER (WHERE cr.estado = 'PENDIENTE'), 0) AS saldo_fiado
+                           COALESCE(SUM(
+                               cr.saldo_pendiente
+                               + CASE
+                                   WHEN CURRENT_DATE > GREATEST(
+                                       COALESCE(cr.fecha_limite, (cr.fecha_credito::date + INTERVAL '7 days')::date),
+                                       (cr.fecha_credito::date + INTERVAL '7 days')::date
+                                   )
+                                   THEN ROUND(
+                                       cr.saldo_pendiente
+                                       * 0.02
+                                       * CEIL((CURRENT_DATE - GREATEST(
+                                           COALESCE(cr.fecha_limite, (cr.fecha_credito::date + INTERVAL '7 days')::date),
+                                           (cr.fecha_credito::date + INTERVAL '7 days')::date
+                                       )) / 7.0),
+                                       2
+                                   )
+                                   ELSE 0
+                               END
+                           ) FILTER (WHERE cr.estado IN ('PENDIENTE', 'VENCIDO')), 0) AS saldo_fiado
                     FROM clientes c
                     LEFT JOIN creditos cr ON cr.id_cliente = c.id_cliente
                     WHERE c.estado = TRUE
