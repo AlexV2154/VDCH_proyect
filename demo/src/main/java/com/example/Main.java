@@ -5,10 +5,12 @@ import com.vdch.abastecimiento.model.DetalleAbastecimiento;
 import com.vdch.abastecimiento.service.AbastecimientoService;
 import com.vdch.categoria.model.Categoria;
 import com.vdch.categoria.service.CategoriaService;
+import com.vdch.config.DatabaseConfig;
 import com.vdch.cliente.dto.ClienteResumen;
 import com.vdch.cliente.model.Cliente;
 import com.vdch.cliente.service.ClienteService;
 import com.vdch.fiado.dto.FiadoResumen;
+import com.vdch.fiado.model.PagoCredito;
 import com.vdch.fiado.service.FiadoService;
 import com.vdch.inventario.dto.ProductoStockBajo;
 import com.vdch.inventario.model.Producto;
@@ -66,6 +68,9 @@ public class Main extends Application {
     private String current = "Inicio";
     private Debt selectedDebt;
 
+    private static final String ADMIN_USER = "admin";
+    private static final String ADMIN_PASSWORD = "admin123";
+
     private final ClienteService clienteService = new ClienteService();
     private final ProductoService productoService = new ProductoService();
     private final CategoriaService categoriaService = new CategoriaService();
@@ -74,7 +79,7 @@ public class Main extends Application {
     private final AbastecimientoService abastecimientoService = new AbastecimientoService();
     private final ReporteService reporteService = new ReporteService();
 
-    private final String[] menu = {"Inicio", "Ventas", "Inventario", "Categorias", "Clientes", "Fiados", "Reportes", "Abastecimiento"};
+    private final String[] menu = {"Inicio", "Ventas", "Inventario", "Categorias", "Clientes", "Fiados", "Reportes", "Agenda", "Abastecimiento"};
     private final List<Debt> debts = new ArrayList<>();
     private final Object cacheLock = new Object();
     private boolean backendLoaded;
@@ -82,6 +87,7 @@ public class Main extends Application {
     private int lastStockAlertCount = -1;
     private int lastExpirationAlertCount = -1;
     private String dashboardPeriod = "DIA";
+    private String supplyModePreset = "PROVEEDOR";
     private ResumenReporte cachedResumen = new ResumenReporte();
     private List<ProductoStockBajo> cachedStockBajo = new ArrayList<>();
     private List<ProductoVendidoReporte> cachedMasVendidos = new ArrayList<>();
@@ -123,14 +129,27 @@ public class Main extends Application {
         PasswordField pass = new PasswordField();
         pass.setPromptText("Escribe tu clave");
         pass.getStyleClass().add("input");
+        Label loginMessage = label("Ingresa tus credenciales para continuar.", "login-help");
+        loginMessage.setWrapText(true);
+
+        Button forgotPassword = button("Olvide mi contrasena", "link-button");
+        forgotPassword.setMaxWidth(Double.MAX_VALUE);
+        forgotPassword.setOnAction(e -> showForgotPasswordDialog());
+
         Button enter = button(icon("login") + "  Entrar al sistema", "primary big-button");
         enter.setMaxWidth(Double.MAX_VALUE);
-        enter.setOnAction(e -> openApp(stage));
+        enter.setDefaultButton(true);
+        enter.setOnAction(e -> authenticateAndOpen(stage, user, pass, loginMessage));
+        pass.setOnAction(e -> authenticateAndOpen(stage, user, pass, loginMessage));
+        user.setOnAction(e -> pass.requestFocus());
+
         form.getChildren().addAll(
                 title("Iniciar sesion", 24),
                 field("Usuario", user),
                 field("Contrasena", pass),
-                enter
+                loginMessage,
+                enter,
+                forgotPassword
         );
 
         HBox center = new HBox(36, brand, form);
@@ -143,13 +162,49 @@ public class Main extends Application {
         root.setBottom(footer);
         return scene(root, 980, 720);
     }
+    private void authenticateAndOpen(Stage stage, TextField user, PasswordField pass, Label loginMessage) {
+        String username = user.getText() == null ? "" : user.getText().trim();
+        String password = pass.getText() == null ? "" : pass.getText();
 
+        if (username.isBlank() || password.isBlank()) {
+            showLoginError(loginMessage, "Completa usuario y contrasena para ingresar.");
+            return;
+        }
+        if (!ADMIN_USER.equals(username) || !ADMIN_PASSWORD.equals(password)) {
+            pass.clear();
+            showLoginError(loginMessage, "Credenciales incorrectas. Usa el usuario autorizado.");
+            return;
+        }
+        if (!DatabaseConfig.testConnection()) {
+            showLoginError(loginMessage, "Credenciales correctas, pero no hay conexion con la base de datos.");
+            return;
+        }
+
+        loginMessage.getStyleClass().setAll("login-help");
+        loginMessage.setText("Conexion correcta. Abriendo sistema...");
+        openApp(stage);
+    }
+
+    private void showLoginError(Label loginMessage, String message) {
+        loginMessage.getStyleClass().setAll("login-error");
+        loginMessage.setText(message);
+    }
+
+    private void showForgotPasswordDialog() {
+        Alert alert = new Alert(Alert.AlertType.INFORMATION);
+        alert.initOwner(mainStage);
+        alert.setTitle("Recuperar contrasena");
+        alert.setHeaderText("Credenciales de administrador");
+        alert.setContentText("Usuario: admin\nContrasena: admin123\n\nSi necesitas cambiarla, actualiza las credenciales del sistema.");
+        alert.showAndWait();
+    }
     private void openApp(Stage stage) {
         app = new BorderPane();
         app.getStyleClass().add("app-root");
         sidebar = new VBox(9);
         sidebar.getStyleClass().add("sidebar");
         app.setLeft(sidebar);
+        ensureAgendaTables();
         refreshBackendData();
         go("Inicio");
         stage.setScene(scene(app, 1160, 735));
@@ -166,6 +221,7 @@ public class Main extends Application {
             case "Clientes" -> clientes();
             case "Fiados" -> fiados();
             case "Reportes" -> reportes();
+            case "Agenda" -> agenda();
             case "Abastecimiento" -> abastecimiento();
             default -> inicio();
         };
@@ -406,6 +462,7 @@ public class Main extends Application {
                 notify("Error de pago", shortError(ex));
             }
         });
+        VBox history = paymentHistoryBox(debt.payments);
         VBox card = new VBox(18,
                 label(icon("money"), "pay-icon"),
                 title("Pago de " + debt.name, 26),
@@ -417,6 +474,7 @@ public class Main extends Application {
                         ? label("Interes agregado: " + money(debt.interest) + " por " + debt.overdueDays + " dia(s) vencido(s).", "notice-small")
                         : label("Saldo base: " + money(debt.baseAmount), "muted"),
                 label("No se permite pagar mas que el saldo pendiente.", "notice-small"),
+                history,
                 field("Monto recibido", amount),
                 buttons(cancel, pay)
         );
@@ -450,84 +508,207 @@ public class Main extends Application {
         return page("Reportes", download, stats, chart(), reports, expirations, sold);
     }
 
+    private VBox agenda() {
+        ensureAgendaTables();
+        TextField supplierName = input("Ej: Pepsico");
+        TextField supplierPhone = input("Ej: 999 888 777");
+        TextField supplierDetail = input("Ej: gaseosas, galletas, snacks");
+        Button saveSupplier = button(icon("add") + " Guardar proveedor", "primary big-button");
+        saveSupplier.setMaxWidth(Double.MAX_VALUE);
+        saveSupplier.setOnAction(e -> {
+            if (supplierName.getText().trim().isBlank()) {
+                notify("Falta nombre", "Escribe el nombre del proveedor.");
+                return;
+            }
+            try {
+                saveSupplierAgenda(supplierName.getText(), supplierPhone.getText(), supplierDetail.getText());
+                notify("Proveedor guardado", "Ya aparece para abastecimiento.");
+                go("Agenda");
+            } catch (RuntimeException ex) {
+                notify("Error", shortError(ex));
+            }
+        });
+        VBox supplierForm = new VBox(12,
+                title("Agregar proveedor", 18),
+                field("Nombre del proveedor", supplierName),
+                field("Telefono o contacto", supplierPhone),
+                field("Que trae o nota", supplierDetail),
+                saveSupplier
+        );
+        supplierForm.getStyleClass().add("supply-form");
+
+        TextField marketName = input("Ej: Puesto 12 - Don Luis");
+        TextField marketSells = input("Ej: verduras, frutas, carnes");
+        TextField marketNote = input("Ej: cobra al contado, atiende temprano");
+        Button saveMarket = button(icon("add") + " Guardar puesto", "primary big-button");
+        saveMarket.setMaxWidth(Double.MAX_VALUE);
+        saveMarket.setOnAction(e -> {
+            if (marketName.getText().trim().isBlank()) {
+                notify("Falta puesto", "Escribe el puesto o nombre del puesto.");
+                return;
+            }
+            try {
+                saveMarketAgenda(marketName.getText(), marketSells.getText(), marketNote.getText());
+                notify("Puesto guardado", "Ya aparece para compras de mercado.");
+                go("Agenda");
+            } catch (RuntimeException ex) {
+                notify("Error", shortError(ex));
+            }
+        });
+        VBox marketForm = new VBox(12,
+                title("Agregar puesto de mercado", 18),
+                field("Puesto o nombre", marketName),
+                field("Que vende", marketSells),
+                field("Nota", marketNote),
+                saveMarket
+        );
+        marketForm.getStyleClass().add("supply-form");
+
+        HBox forms = new HBox(16, supplierForm, marketForm);
+        HBox.setHgrow(supplierForm, Priority.ALWAYS);
+        HBox.setHgrow(marketForm, Priority.ALWAYS);
+
+        VBox suppliers = new VBox(10, title("Proveedores guardados", 18));
+        for (AgendaEntry entry : loadAgendaEntries("PROVEEDOR")) {
+            suppliers.getChildren().add(agendaRow(entry, "PROVEEDOR"));
+        }
+        if (suppliers.getChildren().size() == 1) {
+            suppliers.getChildren().add(muted("Aun no hay proveedores guardados."));
+        }
+        suppliers.getStyleClass().add("panel");
+
+        VBox markets = new VBox(10, title("Puestos de mercado", 18));
+        for (AgendaEntry entry : loadAgendaEntries("MERCADO")) {
+            markets.getChildren().add(agendaRow(entry, "MERCADO"));
+        }
+        if (markets.getChildren().size() == 1) {
+            markets.getChildren().add(muted("Aun no hay puestos guardados."));
+        }
+        markets.getStyleClass().add("panel");
+
+        HBox lists = new HBox(16, suppliers, markets);
+        HBox.setHgrow(suppliers, Priority.ALWAYS);
+        HBox.setHgrow(markets, Priority.ALWAYS);
+        return page("Agenda", null, forms, lists);
+    }
+
+    private HBox agendaRow(AgendaEntry entry, String type) {
+        String detail = "PROVEEDOR".equals(type)
+                ? emptyToDefault(entry.phone, "Sin telefono") + " | " + emptyToDefault(entry.detail, "Sin nota")
+                : emptyToDefault(entry.detail, "Sin detalle");
+        Button delete = button("Eliminar", "gray");
+        delete.setOnAction(e -> confirmDelete("Eliminar", "Se quitara de la agenda: " + entry.name, () -> {
+            try {
+                deleteAgendaEntry(entry.id, type);
+                notify("Eliminado", "Ya no aparecera en abastecimiento.");
+                go("Agenda");
+            } catch (RuntimeException ex) {
+                notify("Error", shortError(ex));
+            }
+        }));
+        HBox actions = new HBox(8, delete);
+        VBox text = new VBox(4, title(entry.name, 16), muted(detail));
+        HBox row = new HBox(12, text, grow(), actions);
+        row.setAlignment(Pos.CENTER_LEFT);
+        row.getStyleClass().add("list-row");
+        return row;
+    }
     private VBox abastecimiento() {
         long[] currentSupplyId = new long[]{0L};
+        boolean startAsMarket = isMarketSupply(supplyModePreset);
 
-        Button supplierMode = button(icon("Clientes") + " Proveedor guardado", "primary big-button");
-        Button marketMode = button(icon("store") + " Compra de mercado", "soft big-button");
-        Button saveSupplier = button(icon("ok") + " Guardar proveedor", "dark big-button");
-
-        TextField supplierName = input("Ej: Don Luis / Mercado Central");
-        ComboBox<String> supplyType = select("PROVEEDOR", "PROVEEDOR", "MERCADO", "DISTRIBUIDORA", "COMPRA RAPIDA");
-        TextField contact = input("Opcional");
+        TextField supplierName = input("");
+        ComboBox<String> supplyType = select(supplyModePreset, "PROVEEDOR", "MERCADO");
+        ComboBox<AgendaEntry> supplySource = new ComboBox<>();
+        supplySource.getStyleClass().add("input");
+        ComboBox<AgendaEntry> marketSource = new ComboBox<>();
+        marketSource.getStyleClass().add("input");
+        TextField contact = input("Telefono o contacto");
         ComboBox<String> receipt = select("SIN COMPROBANTE", "SIN COMPROBANTE", "BOLETA", "FACTURA", "TICKET");
-        DatePicker arrivalDate = datePicker(LocalDate.now());
-        supplierMode.setOnAction(e -> {
-            supplyType.setValue("PROVEEDOR");
-            if (supplierName.getText().isBlank()) {
-                supplierName.setText("Proveedor de tienda");
+        TextField observation = input("Que trae o nota");
+
+        VBox supplierSourceField = field("Proveedor", supplySource);
+        VBox marketStallField = field("Puesto de mercado", marketSource);
+        VBox contactField = field("Telefono o contacto", contact);
+        VBox receiptField = field("Comprobante", receipt);
+        VBox observationField = field("Observaciones", observation);
+
+        configureSupplySources(supplySource);
+        configureMarketSources(marketSource);
+        Runnable syncSupplySource = () -> {
+            boolean market = isMarketSupply(supplyType.getValue());
+            supplierSourceField.setVisible(!market);
+            supplierSourceField.setManaged(!market);
+            marketStallField.setVisible(market);
+            marketStallField.setManaged(market);
+            contactField.setVisible(!market);
+            contactField.setManaged(!market);
+            receiptField.setVisible(!market);
+            receiptField.setManaged(!market);
+            observationField.setVisible(!market);
+            AgendaEntry selected = market ? marketSource.getValue() : supplySource.getValue();
+            supplierName.setText(selected == null ? "" : selected.name);
+            if (!market && selected != null) {
+                contact.setText(textOrEmpty(selected.phone));
+                observation.setText(textOrEmpty(selected.detail));
             }
-            notify("Modo proveedor", "Arma la lista de productos que deja el proveedor.");
-        });
-        marketMode.setOnAction(e -> {
-            supplyType.setValue("MERCADO");
-            if (supplierName.getText().isBlank()) {
-                supplierName.setText("Mercado");
-            }
-            notify("Compra de mercado", "Arma la lista de todo lo comprado en el mercado.");
-        });
+        };
+        supplySource.setOnAction(e -> syncSupplySource.run());
+        marketSource.setOnAction(e -> syncSupplySource.run());
+        syncSupplySource.run();
 
         VBox supplier = new VBox(12,
-                title("Datos del ingreso", 18),
-                new HBox(10, supplierMode, marketMode),
-                field("Proveedor o lugar de compra", supplierName),
-                field("Tipo de abastecimiento", supplyType),
-                field("Telefono o contacto", contact),
-                field("Comprobante", receipt),
-                field("Fecha de llegada", arrivalDate),
-                saveSupplier
+                title("Datos del abastecimiento", 18),
+                field("Tipo", supplyType),
+                supplierSourceField,
+                marketStallField,
+                contactField,
+                receiptField,
+                observationField
         );
         supplier.getStyleClass().add("supply-form");
 
         ComboBox<CategoriaChoice> category = supplyCategorySelect();
         ComboBox<ProductChoice> productSelect = new ComboBox<>();
-        populateSupplyProducts(productSelect, selectedCategoryId(category));
+        populateSupplyProducts(productSelect, selectedCategoryId(category), supplyType.getValue());
         productSelect.getStyleClass().add("input");
+
         ComboBox<String> unit = new ComboBox<>();
         unit.getStyleClass().add("input");
         configureSupplyUnits(unit, productSelect.getValue() == null ? null : productSelect.getValue().producto);
+
         category.setOnAction(e -> {
-            populateSupplyProducts(productSelect, selectedCategoryId(category));
+            populateSupplyProducts(productSelect, selectedCategoryId(category), supplyType.getValue());
             configureSupplyUnits(unit, productSelect.getValue() == null ? null : productSelect.getValue().producto);
         });
         productSelect.setOnAction(e -> configureSupplyUnits(unit, productSelect.getValue() == null ? null : productSelect.getValue().producto));
+        supplyType.setOnAction(e -> {
+            supplyModePreset = supplyType.getValue();
+            configureSupplySources(supplySource);
+            configureMarketSources(marketSource);
+            syncSupplySource.run();
+            populateSupplyProducts(productSelect, selectedCategoryId(category), supplyType.getValue());
+            configureSupplyUnits(unit, productSelect.getValue() == null ? null : productSelect.getValue().producto);
+        });
+
         TextField quantity = input("Ej: 25, 500 o 12");
         TextField cost = input("Ej: 85.00");
         TextField salePrice = input("Ej: 4.20");
-        TextField observation = input("Ej: pago pendiente, entrega incompleta");
 
         VBox productForm = new VBox(12,
-                title("Producto para inventario", 18),
-                label("Cada producto agregado se suma automaticamente al inventario.", "notice-small"),
+                title("Producto", 18),
                 field("Categoria", category),
                 field("Producto", productSelect),
                 field("Cantidad recibida", quantity),
                 field("Unidad de compra", unit),
                 field("Costo de compra", cost),
-                field("Precio de venta", salePrice),
-                field("Observaciones", observation)
+                field("Precio de venta", salePrice)
         );
         productForm.getStyleClass().add("supply-form");
 
-        Button addLine = button(icon("add") + " Agregar producto recibido", "soft big-button");
-
         VBox purchaseList = new VBox(10, supplyEmptyLabel());
         purchaseList.getStyleClass().add("supply-list");
-        VBox purchasePanel = new VBox(12,
-                title("Lista de compra para inventario", 18),
-                label("Aqui aparece todo lo comprado en mercado, proveedor o distribuidora.", "notice-small"),
-                purchaseList
-        );
+        VBox purchasePanel = new VBox(12, title("Lista", 18), purchaseList);
         purchasePanel.getStyleClass().add("supply-list-panel");
 
         int[] summaryProducts = new int[]{0};
@@ -537,20 +718,8 @@ public class Main extends Application {
         Label summaryCostValue = new Label(money(BigDecimal.ZERO));
         Label summarySaleValueLabel = new Label(money(BigDecimal.ZERO));
         Label summaryProfitValue = new Label(money(BigDecimal.ZERO));
-        Label summaryOriginValue = new Label(supplyOrigin(supplierName.getText(), supplyType.getValue()));
-        Runnable refreshOrigin = () -> summaryOriginValue.setText(supplyOrigin(supplierName.getText(), supplyType.getValue()));
-        supplierName.textProperty().addListener((obs, oldValue, newValue) -> refreshOrigin.run());
-        supplyType.setOnAction(e -> refreshOrigin.run());
 
-        Button save = button(icon("ok") + " Guardar ingreso", "primary big-button");
-        save.setOnAction(e -> {
-            Long id = guardarAbastecimiento(supplierName, supplyType, contact, receipt, observation);
-            if (id != null) {
-                currentSupplyId[0] = id;
-                notify("Abastecimiento guardado", "Ingreso #" + id + " listo para agregar productos.");
-            }
-        });
-        saveSupplier.setOnAction(save.getOnAction());
+        Button addLine = button(icon("add") + " Agregar", "primary big-button");
         addLine.setOnAction(e -> {
             if (currentSupplyId[0] == 0L) {
                 Long id = guardarAbastecimiento(supplierName, supplyType, contact, receipt, observation);
@@ -562,18 +731,20 @@ public class Main extends Application {
                 notify("Producto requerido", "Selecciona un producto del inventario.");
                 return;
             }
-            DetalleAbastecimiento detail = new DetalleAbastecimiento();
-            detail.setIdProducto(selected.producto.getIdProducto());
-            QuantityParts parts = parseQuantity(quantity.getText(), unit.getValue());
-            detail.setCantidad(parts.amount);
-            detail.setUnidadCompra(parts.unit);
-            detail.setCostoUnitario(parseMoney(cost.getText()));
-            detail.setPrecioVenta(parseMoney(salePrice.getText()));
             try {
+                DetalleAbastecimiento detail = new DetalleAbastecimiento();
+                detail.setIdProducto(selected.producto.getIdProducto());
+                QuantityParts parts = parseQuantity(quantity.getText(), unit.getValue());
+                detail.setCantidad(parts.amount);
+                detail.setUnidadCompra(parts.unit);
+                detail.setCostoUnitario(parseMoney(cost.getText()));
+                detail.setPrecioVenta(parseMoney(salePrice.getText()));
+
                 BigDecimal normalized = parts.normalizedFor(selected.producto);
                 BigDecimal lineCost = normalized.multiply(detail.getCostoUnitario());
                 BigDecimal lineSaleValue = normalized.multiply(detail.getPrecioVenta());
                 abastecimientoService.agregarProducto(currentSupplyId[0], detail);
+
                 if (summaryProducts[0] == 0) {
                     purchaseList.getChildren().clear();
                 }
@@ -586,6 +757,7 @@ public class Main extends Application {
                         lineCost,
                         lineSaleValue
                 ));
+
                 summaryProducts[0]++;
                 summaryCost[0] = summaryCost[0].add(lineCost);
                 summarySaleValue[0] = summarySaleValue[0].add(lineSaleValue);
@@ -593,42 +765,40 @@ public class Main extends Application {
                 summaryCostValue.setText(money(summaryCost[0]));
                 summarySaleValueLabel.setText(money(summarySaleValue[0]));
                 summaryProfitValue.setText(money(summarySaleValue[0].subtract(summaryCost[0])));
-                refreshOrigin.run();
-                notify("Producto agregado", "Se agrego a la lista y el inventario fue actualizado.");
+
+                notify("Stock actualizado", selected.producto.getNombre() + " agregado al inventario.");
                 quantity.clear();
-                observation.clear();
                 refreshBackendData();
             } catch (RuntimeException ex) {
                 notify("Error de abastecimiento", shortError(ex));
             }
         });
-        Button clean = button("Limpiar formulario", "gray big-button");
+
+        Button clean = button("Limpiar", "gray big-button");
         clean.setOnAction(e -> {
             quantity.clear();
             cost.clear();
             salePrice.clear();
-            observation.clear();
-            notify("Formulario limpio", "Puedes ingresar nuevos productos.");
         });
+
         VBox total = new VBox(12,
                 title("Resumen", 18),
-                summaryRow("Productos agregados", summaryProductsValue),
-                summaryRow("Costo total", summaryCostValue),
-                summaryRow("Valor de venta", summarySaleValueLabel),
-                summaryRow("Ganancia estimada", summaryProfitValue),
-                summaryRow("Origen", summaryOriginValue),
-                save,
+                summaryRow("Productos", summaryProductsValue),
+                summaryRow("Costo", summaryCostValue),
+                summaryRow("Valor venta", summarySaleValueLabel),
+                summaryRow("Ganancia", summaryProfitValue),
+                addLine,
                 clean
         );
         total.getStyleClass().add("cart");
+
         HBox forms = new HBox(16, supplier, productForm);
         HBox.setHgrow(supplier, Priority.ALWAYS);
         HBox.setHgrow(productForm, Priority.ALWAYS);
         HBox body = new HBox(18, purchasePanel, total);
         HBox.setHgrow(purchasePanel, Priority.ALWAYS);
-        return page("Nuevo abastecimiento", null, forms, addLine, body);
+        return page(startAsMarket ? "Compra de mercado" : "Proveedor en tienda", null, forms, body);
     }
-
     private void productModal() {
         productFormModal(null);
     }
@@ -925,39 +1095,6 @@ public class Main extends Application {
         }
 
         showModal(dialog, "Detalle de categoria", box, 430, 400);
-    }
-
-    private void marketPurchaseModal() {
-        Stage dialog = new Stage();
-        dialog.initModality(Modality.APPLICATION_MODAL);
-        dialog.initOwner(mainStage);
-
-        VBox box = new VBox(12);
-        box.getStyleClass().add("modal");
-        box.getChildren().addAll(
-                label(icon("store"), "modal-icon"),
-                title("Compra de mercado", 22),
-                label("Para compras normales sin proveedor fijo.", "notice-small"),
-                field("Mercado o lugar", input("Ej: Mercado Central")),
-                field("Puesto o vendedor", input("Ej: Puesto 12 / senora Rosa")),
-                field("Producto comprado", input("Ej: Tomate, arroz, maracuya")),
-                field("Cantidad comprada", input("Ej: 5 kg, 2 cajas, 12 unidades")),
-                field("Unidad", input("Kilo, gramo, caja, paquete, unidad")),
-                field("Costo total", input("Ej: S/ 45.00")),
-                field("Precio de venta", input("Ej: S/ 7.50 x kg")),
-                field("Observaciones", input("Ej: contado, sin boleta, producto fresco"))
-        );
-
-        Button cancel = button("Cancelar", "gray big-button");
-        cancel.setOnAction(e -> dialog.close());
-        Button save = button(icon("ok") + " Guardar compra", "primary big-button");
-        save.setOnAction(e -> {
-            dialog.close();
-            notify("Compra de mercado guardada", "La compra se agrego al abastecimiento.");
-        });
-        box.getChildren().add(buttons(cancel, save));
-
-        showModal(dialog, "Compra de mercado", box, 470, 690);
     }
 
     private void modal(String modalTitle, List<String> fields) {
@@ -1694,12 +1831,20 @@ public class Main extends Application {
 
     private String pdfEscape(String text) {
         String clean = text == null ? "" : text
-                .replace("á", "a").replace("é", "e").replace("í", "i").replace("ó", "o").replace("ú", "u")
-                .replace("Á", "A").replace("É", "E").replace("Í", "I").replace("Ó", "O").replace("Ú", "U")
-                .replace("ñ", "n").replace("Ñ", "N");
+                .replace("\u00e1", "a")
+                .replace("\u00e9", "e")
+                .replace("\u00ed", "i")
+                .replace("\u00f3", "o")
+                .replace("\u00fa", "u")
+                .replace("\u00c1", "A")
+                .replace("\u00c9", "E")
+                .replace("\u00cd", "I")
+                .replace("\u00d3", "O")
+                .replace("\u00da", "U")
+                .replace("\u00f1", "n")
+                .replace("\u00d1", "N");
         return clean.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)");
     }
-
     private VBox product(Producto product, VBox cartItems, Label total, List<CartLine> cartLines) {
         Button add = button(icon("add") + " Agregar", "soft");
         add.setMinWidth(132);
@@ -2151,6 +2296,9 @@ public class Main extends Application {
                 String detail = interest.compareTo(BigDecimal.ZERO) > 0
                         ? money(baseAmount) + " x 2% x " + interestWeeks + " semana(s) = " + money(interest)
                         : "Sin interes. Vence: " + (debt.getFechaLimite() == null ? "Sin fecha" : debt.getFechaLimite());
+                List<PagoCredito> payments = debt.getIdCredito() == null
+                        ? new ArrayList<>()
+                        : fiadoService.listarPagosPorCredito(debt.getIdCredito());
                 debts.add(new Debt(
                         debt.getIdCredito(),
                         debt.getCliente(),
@@ -2162,7 +2310,8 @@ public class Main extends Application {
                         overdueDays,
                         interestWeeks,
                         detail,
-                        true
+                        true,
+                        payments
                 ));
             }
         }
@@ -2486,12 +2635,39 @@ public class Main extends Application {
                 ? label("Total actualizado: " + debt.amount, "notice-small")
                 : muted("Total: " + debt.amount);
         total.setWrapText(true);
-        VBox b = new VBox(10, title(icon("Fiados") + "  " + debt.name, 17), muted(debt.date), title(debt.amount, 18), interest, total, action);
+        VBox b = new VBox(10, title(icon("Fiados") + "  " + debt.name, 17), muted(debt.date), title(debt.amount, 18), interest, total, paymentHistoryBox(debt.payments), action);
         b.getStyleClass().add(debt.pending ? "debt-card" : "paid-card");
-        b.setPrefSize(265, 215);
+        b.setPrefSize(300, debt.payments.isEmpty() ? 235 : 315);
         return b;
     }
 
+    private VBox paymentHistoryBox(List<PagoCredito> payments) {
+        VBox history = new VBox(7, title("Historial de abonos", 15));
+        history.getStyleClass().add("payment-history");
+        if (payments == null || payments.isEmpty()) {
+            Label empty = muted("Todavia no hay abonos registrados.");
+            empty.setWrapText(true);
+            history.getChildren().add(empty);
+            return history;
+        }
+        for (PagoCredito payment : payments) {
+            history.getChildren().add(paymentHistoryRow(payment));
+        }
+        return history;
+    }
+
+    private HBox paymentHistoryRow(PagoCredito payment) {
+        Label date = label(formatPaymentDate(payment.getFechaPago()), "payment-date");
+        Label amount = label(money(payment.getMontoPagado()), "payment-amount");
+        HBox row = new HBox(8, date, grow(), amount);
+        row.setAlignment(Pos.CENTER_LEFT);
+        row.getStyleClass().add("payment-row");
+        return row;
+    }
+
+    private String formatPaymentDate(LocalDateTime date) {
+        return date == null ? "Sin fecha" : date.format(DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm"));
+    }
     private HBox row(String left, String right) {
         HBox r = new HBox(10, new Label(left), grow(), new Label(right));
         r.setAlignment(Pos.CENTER_LEFT);
@@ -2536,11 +2712,152 @@ public class Main extends Application {
         return detail;
     }
 
+
+
+    private void configureSupplySources(ComboBox<AgendaEntry> sourceSelect) {
+        sourceSelect.getItems().clear();
+        sourceSelect.getItems().addAll(loadAgendaEntries("PROVEEDOR"));
+        if (!sourceSelect.getItems().isEmpty()) {
+            sourceSelect.setValue(sourceSelect.getItems().get(0));
+        }
+        sourceSelect.setMaxWidth(Double.MAX_VALUE);
+    }
+
+    private void configureMarketSources(ComboBox<AgendaEntry> sourceSelect) {
+        sourceSelect.getItems().clear();
+        sourceSelect.getItems().addAll(loadAgendaEntries("MERCADO"));
+        if (!sourceSelect.getItems().isEmpty()) {
+            sourceSelect.setValue(sourceSelect.getItems().get(0));
+        }
+        sourceSelect.setMaxWidth(Double.MAX_VALUE);
+    }
+    private boolean isMarketSupply(String type) {
+        return "MERCADO".equalsIgnoreCase(emptyToDefault(type, "PROVEEDOR"));
+    }
+
+
+    private boolean isMarketProduct(Producto product) {
+        if (product == null) return false;
+        String type = textOrEmpty(product.getTipoVenta()).toUpperCase();
+        String unit = normalizeUnit(product.getUnidadBase());
+        return "GRANEL".equals(type) || "KG".equals(unit) || "G".equals(unit);
+    }
+
     private String supplyOrigin(String supplier, String type) {
         String name = textOrEmpty(supplier).isBlank() ? "Sin proveedor" : supplier.trim();
         return name + " / " + emptyToDefault(type, "PROVEEDOR");
     }
 
+    private void ensureAgendaTables() {
+        try {
+            DatabaseConfig.jdbcTemplate().execute("""
+                    CREATE TABLE IF NOT EXISTS agenda_proveedores (
+                        id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+                        nombre VARCHAR(150) NOT NULL,
+                        telefono VARCHAR(80),
+                        detalle VARCHAR(250),
+                        activo BOOLEAN NOT NULL DEFAULT TRUE,
+                        creado_en TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    )
+                    """);
+            DatabaseConfig.jdbcTemplate().execute("""
+                    CREATE TABLE IF NOT EXISTS agenda_mercado (
+                        id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+                        puesto VARCHAR(150) NOT NULL,
+                        vende VARCHAR(180),
+                        nota VARCHAR(250),
+                        activo BOOLEAN NOT NULL DEFAULT TRUE,
+                        creado_en TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    )
+                    """);
+            seedSupplierAgenda("Pepsico", "", "Gaseosas, galletas y snacks");
+            seedSupplierAgenda("Coca Cola", "", "Gaseosas y bebidas");
+            seedSupplierAgenda("Backus", "", "Bebidas");
+            seedSupplierAgenda("Gloria", "", "Lacteos");
+            seedSupplierAgenda("Alicorp", "", "Abarrotes");
+        } catch (RuntimeException ex) {
+            notify("Agenda", shortError(ex));
+        }
+    }
+
+    private void seedSupplierAgenda(String name, String phone, String detail) {
+        Integer exists = DatabaseConfig.jdbcTemplate().queryForObject(
+                "SELECT COUNT(*) FROM agenda_proveedores WHERE LOWER(nombre) = LOWER(?)",
+                Integer.class,
+                name
+        );
+        if (exists == null || exists == 0) {
+            saveSupplierAgenda(name, phone, detail);
+        }
+    }
+
+    private void saveSupplierAgenda(String name, String phone, String detail) {
+        DatabaseConfig.jdbcTemplate().update(
+                "INSERT INTO agenda_proveedores(nombre, telefono, detalle, activo) VALUES (?, ?, ?, TRUE)",
+                name.trim(), textOrEmpty(phone).trim(), textOrEmpty(detail).trim()
+        );
+    }
+
+    private void saveMarketAgenda(String puesto, String vende, String nota) {
+        DatabaseConfig.jdbcTemplate().update(
+                "INSERT INTO agenda_mercado(puesto, vende, nota, activo) VALUES (?, ?, ?, TRUE)",
+                puesto.trim(), textOrEmpty(vende).trim(), textOrEmpty(nota).trim()
+        );
+    }
+
+    private void deleteAgendaEntry(long id, String type) {
+        if ("MERCADO".equals(type)) {
+            DatabaseConfig.jdbcTemplate().update("UPDATE agenda_mercado SET activo = FALSE WHERE id = ?", id);
+        } else {
+            DatabaseConfig.jdbcTemplate().update("UPDATE agenda_proveedores SET activo = FALSE WHERE id = ?", id);
+        }
+    }
+
+    private List<AgendaEntry> loadAgendaEntries(String type) {
+        ensureAgendaTablesQuietly();
+        if ("MERCADO".equals(type)) {
+            return DatabaseConfig.jdbcTemplate().query(
+                    "SELECT id, puesto, COALESCE(vende, ''), COALESCE(nota, '') FROM agenda_mercado WHERE activo = TRUE ORDER BY puesto",
+                    (rs, row) -> new AgendaEntry(rs.getLong(1), rs.getString(2), "", marketDetail(rs.getString(3), rs.getString(4)))
+            );
+        }
+        return DatabaseConfig.jdbcTemplate().query(
+                "SELECT id, nombre, COALESCE(telefono, ''), COALESCE(detalle, '') FROM agenda_proveedores WHERE activo = TRUE ORDER BY nombre",
+                (rs, row) -> new AgendaEntry(rs.getLong(1), rs.getString(2), rs.getString(3), rs.getString(4))
+        );
+    }
+
+    private void ensureAgendaTablesQuietly() {
+        try {
+            DatabaseConfig.jdbcTemplate().execute("""
+                    CREATE TABLE IF NOT EXISTS agenda_proveedores (
+                        id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+                        nombre VARCHAR(150) NOT NULL,
+                        telefono VARCHAR(80),
+                        detalle VARCHAR(250),
+                        activo BOOLEAN NOT NULL DEFAULT TRUE,
+                        creado_en TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    )
+                    """);
+            DatabaseConfig.jdbcTemplate().execute("""
+                    CREATE TABLE IF NOT EXISTS agenda_mercado (
+                        id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+                        puesto VARCHAR(150) NOT NULL,
+                        vende VARCHAR(180),
+                        nota VARCHAR(250),
+                        activo BOOLEAN NOT NULL DEFAULT TRUE,
+                        creado_en TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    )
+                    """);
+        } catch (RuntimeException ignored) {
+        }
+    }
+
+    private String marketDetail(String sells, String note) {
+        String left = textOrEmpty(sells).isBlank() ? "Sin detalle" : sells.trim();
+        String right = textOrEmpty(note).isBlank() ? "" : " | " + note.trim();
+        return left + right;
+    }
     private VBox panel(String panelTitle, Node... rows) {
         VBox p = new VBox(9, title(panelTitle, 17));
         p.getChildren().addAll(rows);
@@ -2671,15 +2988,20 @@ public class Main extends Application {
         return combo;
     }
 
-    private void populateSupplyProducts(ComboBox<ProductChoice> productSelect, Long categoryId) {
+    private void populateSupplyProducts(ComboBox<ProductChoice> productSelect, Long categoryId, String supplyType) {
         productSelect.getItems().clear();
+        boolean market = isMarketSupply(supplyType);
         for (Producto producto : safeProductos(null)) {
             if (categoryId == null || categoryId.equals(producto.getIdCategoria())) {
-                productSelect.getItems().add(new ProductChoice(producto));
+                if (!market || isMarketProduct(producto)) {
+                    productSelect.getItems().add(new ProductChoice(producto));
+                }
             }
         }
         if (!productSelect.getItems().isEmpty()) {
             productSelect.setValue(productSelect.getItems().get(0));
+        } else {
+            productSelect.setValue(null);
         }
         productSelect.setMaxWidth(Double.MAX_VALUE);
     }
@@ -2846,6 +3168,7 @@ public class Main extends Application {
             case "Fiados", "Cobrar fiado" -> "\uD83D\uDCCB";
             case "Reportes" -> "\uD83D\uDCCA";
             case "Abastecimiento" -> "\uD83D\uDE9A";
+            case "Agenda" -> "\u260E";
             case "money" -> "\uD83D\uDCB5";
             case "profit" -> "\uD83D\uDCC8";
             case "add" -> "\u2795";
@@ -2857,6 +3180,25 @@ public class Main extends Application {
         };
     }
 
+
+    private static class AgendaEntry {
+        private final long id;
+        private final String name;
+        private final String phone;
+        private final String detail;
+
+        private AgendaEntry(long id, String name, String phone, String detail) {
+            this.id = id;
+            this.name = name == null ? "" : name;
+            this.phone = phone == null ? "" : phone;
+            this.detail = detail == null ? "" : detail;
+        }
+
+        @Override
+        public String toString() {
+            return name;
+        }
+    }
     private static class Debt {
         private final Long idCredito;
         private final String name;
@@ -2868,13 +3210,14 @@ public class Main extends Application {
         private final int overdueDays;
         private final int interestWeeks;
         private final String detail;
+        private final List<PagoCredito> payments;
         private boolean pending;
 
         private Debt(String name, String date, String amount, boolean pending) {
-            this(null, name, date, amount, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, 0, 0, "", pending);
+            this(null, name, date, amount, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, 0, 0, "", pending, new ArrayList<>());
         }
 
-        private Debt(Long idCredito, String name, String date, String amount, BigDecimal amountValue, BigDecimal baseAmount, BigDecimal interest, int overdueDays, int interestWeeks, String detail, boolean pending) {
+        private Debt(Long idCredito, String name, String date, String amount, BigDecimal amountValue, BigDecimal baseAmount, BigDecimal interest, int overdueDays, int interestWeeks, String detail, boolean pending, List<PagoCredito> payments) {
             this.idCredito = idCredito;
             this.name = name;
             this.date = date;
@@ -2885,6 +3228,7 @@ public class Main extends Application {
             this.overdueDays = overdueDays;
             this.interestWeeks = interestWeeks;
             this.detail = detail == null ? "" : detail;
+            this.payments = payments == null ? new ArrayList<>() : payments;
             this.pending = pending;
         }
     }
@@ -2992,3 +3336,5 @@ public class Main extends Application {
         }
     }
 }
+
+

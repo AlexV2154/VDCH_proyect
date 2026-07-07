@@ -1,6 +1,7 @@
 package com.vdch.fiado.service;
 
 import com.vdch.fiado.dto.FiadoResumen;
+import com.vdch.fiado.model.PagoCredito;
 import com.vdch.fiado.repository.FiadoRepository;
 import java.math.BigDecimal;
 import java.util.List;
@@ -20,6 +21,9 @@ public class FiadoService {
         return fiadoRepository.listarPendientes();
     }
 
+    public List<PagoCredito> listarPagosPorCredito(Long idCredito) {
+        return fiadoRepository.listarPagosPorCredito(idCredito);
+    }
     public Long registrarPago(Long idCredito, BigDecimal montoPagado, String metodoPago, String observacion) {
         return fiadoRepository.registrarPago(idCredito, montoPagado, metodoPago, observacion);
     }

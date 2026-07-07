@@ -10,6 +10,7 @@ com\vdch\fiado\service\FiadoService.class
 com\vdch\config\AppConfig.class
 com\vdch\fiado\model\PagoCredito.class
 com\vdch\inventario\dto\ProductoStockBajo.class
+com\example\Main$AgendaEntry.class
 com\vdch\abastecimiento\model\Abastecimiento.class
 com\vdch\inventario\repository\ProductoRepository.class
 com\example\Main$Debt.class

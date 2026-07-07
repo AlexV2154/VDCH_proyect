@@ -1,6 +1,7 @@
 package com.vdch.fiado.repository;
 
 import com.vdch.fiado.dto.FiadoResumen;
+import com.vdch.fiado.model.PagoCredito;
 import com.vdch.shared.constants.DbFunctions;
 import com.vdch.shared.util.StoredProcedureExecutor;
 import java.math.BigDecimal;
@@ -89,6 +90,26 @@ public class FiadoRepository {
             }
         }
         return false;
+    }
+
+    public List<PagoCredito> listarPagosPorCredito(Long idCredito) {
+        return executor.querySql("""
+                SELECT id_pago_credito, id_credito, monto_pagado, metodo_pago, fecha_pago, observacion
+                FROM pagos_credito
+                WHERE id_credito = ?
+                ORDER BY fecha_pago DESC
+                """, (rs, rowNum) -> mapPagoCredito(rs, rowNum), idCredito);
+    }
+
+    private PagoCredito mapPagoCredito(ResultSet rs, int rowNum) throws java.sql.SQLException {
+        PagoCredito pago = new PagoCredito();
+        pago.setIdPagoCredito(rs.getLong("id_pago_credito"));
+        pago.setIdCredito(rs.getLong("id_credito"));
+        pago.setMontoPagado(rs.getBigDecimal("monto_pagado"));
+        pago.setMetodoPago(rs.getString("metodo_pago"));
+        pago.setFechaPago(rs.getTimestamp("fecha_pago") == null ? null : rs.getTimestamp("fecha_pago").toLocalDateTime());
+        pago.setObservacion(rs.getString("observacion"));
+        return pago;
     }
 
     public Long registrarPago(Long idCredito, BigDecimal montoPagado, String metodoPago, String observacion) {

@@ -670,3 +670,58 @@
     -fx-text-fill: #dceaf7;
     -fx-font-size: 13px;
 }
+
+.login-help {
+    -fx-text-fill: #526174;
+    -fx-font-size: 13px;
+    -fx-padding: 2px 0 0 0;
+}
+
+.login-error {
+    -fx-background-color: #fff0f0;
+    -fx-border-color: #f0b6b6;
+    -fx-text-fill: #9b1c1c;
+    -fx-padding: 10px 12px;
+    -fx-background-radius: 10px;
+    -fx-border-radius: 10px;
+    -fx-font-weight: 700;
+}
+
+.link-button {
+    -fx-background-color: transparent;
+    -fx-text-fill: #0b5aa5;
+    -fx-font-weight: 700;
+    -fx-underline: true;
+    -fx-cursor: hand;
+    -fx-padding: 6px 0 0 0;
+}
+
+.link-button:hover {
+    -fx-text-fill: #07315f;
+}
+
+.payment-history {
+    -fx-background-color: #f7fbff;
+    -fx-border-color: #d7e7f5;
+    -fx-border-radius: 10px;
+    -fx-background-radius: 10px;
+    -fx-padding: 10px;
+}
+
+.payment-row {
+    -fx-background-color: white;
+    -fx-background-radius: 8px;
+    -fx-padding: 7px 9px;
+}
+
+.payment-date {
+    -fx-text-fill: #526174;
+    -fx-font-size: 12px;
+    -fx-font-weight: 700;
+}
+
+.payment-amount {
+    -fx-text-fill: #0b5aa5;
+    -fx-font-size: 13px;
+    -fx-font-weight: 900;
+}
