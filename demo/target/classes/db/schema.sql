@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS productos (
     precio_venta NUMERIC(12, 2) NOT NULL DEFAULT 0,
     stock_actual NUMERIC(12, 3) NOT NULL DEFAULT 0,
     stock_minimo NUMERIC(12, 3) NOT NULL DEFAULT 0,
+    lote VARCHAR(80),
     fecha_vencimiento DATE,
     estado BOOLEAN NOT NULL DEFAULT TRUE,
     CONSTRAINT chk_productos_tipo_venta CHECK (tipo_venta IN ('UNIDAD', 'GRANEL', 'PAQUETE'))
@@ -111,6 +112,8 @@ CREATE TABLE IF NOT EXISTS detalle_abastecimientos (
     unidad_compra VARCHAR(30) NOT NULL DEFAULT 'UNIDAD',
     costo_unitario NUMERIC(12, 2) NOT NULL,
     precio_venta NUMERIC(12, 2) NOT NULL DEFAULT 0,
+    lote VARCHAR(80),
+    fecha_vencimiento DATE,
     subtotal NUMERIC(12, 2) NOT NULL
 );
 

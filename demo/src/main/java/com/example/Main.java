@@ -79,7 +79,7 @@ public class Main extends Application {
     private final AbastecimientoService abastecimientoService = new AbastecimientoService();
     private final ReporteService reporteService = new ReporteService();
 
-    private final String[] menu = {"Inicio", "Ventas", "Inventario", "Categorias", "Clientes", "Fiados", "Reportes", "Agenda", "Abastecimiento"};
+    private final String[] menu = {"Inicio", "Ventas", "Inventario", "Clientes", "Fiados", "Abastecimiento", "Reportes", "Agenda", "Categorias"};
     private final List<Debt> debts = new ArrayList<>();
     private final Object cacheLock = new Object();
     private boolean backendLoaded;
@@ -88,6 +88,8 @@ public class Main extends Application {
     private int lastExpirationAlertCount = -1;
     private String dashboardPeriod = "DIA";
     private String supplyModePreset = "PROVEEDOR";
+    private LocalDate reportStartDate = LocalDate.now();
+    private LocalDate reportEndDate = LocalDate.now();
     private ResumenReporte cachedResumen = new ResumenReporte();
     private List<ProductoStockBajo> cachedStockBajo = new ArrayList<>();
     private List<ProductoVendidoReporte> cachedMasVendidos = new ArrayList<>();
@@ -104,8 +106,8 @@ public class Main extends Application {
     public void start(Stage stage) {
         mainStage = stage;
         stage.setTitle("Virgencita de Chapi");
-        stage.setMinWidth(1120);
-        stage.setMinHeight(735);
+        stage.setMinWidth(1320);
+        stage.setMinHeight(780);
         stage.setScene(login(stage));
         stage.show();
     }
@@ -132,9 +134,6 @@ public class Main extends Application {
         Label loginMessage = label("Ingresa tus credenciales para continuar.", "login-help");
         loginMessage.setWrapText(true);
 
-        Button forgotPassword = button("Olvide mi contrasena", "link-button");
-        forgotPassword.setMaxWidth(Double.MAX_VALUE);
-        forgotPassword.setOnAction(e -> showForgotPasswordDialog());
 
         Button enter = button(icon("login") + "  Entrar al sistema", "primary big-button");
         enter.setMaxWidth(Double.MAX_VALUE);
@@ -148,8 +147,7 @@ public class Main extends Application {
                 field("Usuario", user),
                 field("Contrasena", pass),
                 loginMessage,
-                enter,
-                forgotPassword
+                enter
         );
 
         HBox center = new HBox(36, brand, form);
@@ -190,14 +188,6 @@ public class Main extends Application {
         loginMessage.setText(message);
     }
 
-    private void showForgotPasswordDialog() {
-        Alert alert = new Alert(Alert.AlertType.INFORMATION);
-        alert.initOwner(mainStage);
-        alert.setTitle("Recuperar contrasena");
-        alert.setHeaderText("Credenciales de administrador");
-        alert.setContentText("Usuario: admin\nContrasena: admin123\n\nSi necesitas cambiarla, actualiza las credenciales del sistema.");
-        alert.showAndWait();
-    }
     private void openApp(Stage stage) {
         app = new BorderPane();
         app.getStyleClass().add("app-root");
@@ -205,9 +195,10 @@ public class Main extends Application {
         sidebar.getStyleClass().add("sidebar");
         app.setLeft(sidebar);
         ensureAgendaTables();
+        ensureInventoryBatchColumns();
         refreshBackendData();
         go("Inicio");
-        stage.setScene(scene(app, 1160, 735));
+        stage.setScene(scene(app, 1420, 820));
         notify("Bienvenida", "Lista para vender, revisar fiados y registrar pagos.");
     }
 
@@ -230,19 +221,29 @@ public class Main extends Application {
 
     private void drawSidebar() {
         sidebar.getChildren().clear();
-        VBox logo = new VBox(5, label(icon("store"), "logo-icon"), label("Virgencita de\nChapi", "logo-text"), label("Gestion de tienda", "logo-sub"));
+        VBox logo = new VBox(8, label(icon("store"), "logo-icon"), label("Mi Tienda", "logo-text"));
         logo.setAlignment(Pos.CENTER);
         logo.getStyleClass().add("logo-box");
         sidebar.getChildren().add(logo);
 
         for (String item : menu) {
-            Button b = new Button(icon(item) + "  " + item);
+            Button b = new Button(icon(item) + "  " + navLabel(item));
             b.getStyleClass().add("nav-button");
             if (item.equals(current)) b.getStyleClass().add("nav-active");
             b.setMaxWidth(Double.MAX_VALUE);
             b.setOnAction(e -> go(item));
             sidebar.getChildren().add(b);
         }
+        Region spacer = new Region();
+        VBox.setVgrow(spacer, Priority.ALWAYS);
+        sidebar.getChildren().add(spacer);
+    }
+
+    private String navLabel(String item) {
+        return switch (item) {
+            case "Inventario" -> "Productos";
+            default -> item;
+        };
     }
 
     private VBox inicio() {
@@ -263,27 +264,90 @@ public class Main extends Application {
         filterBar.setAlignment(Pos.CENTER_LEFT);
         filterBar.getStyleClass().add("dashboard-filter");
 
-        GridPane stats = new GridPane();
-        stats.setHgap(14);
-        stats.setVgap(14);
-        stats.add(stat(icon("Ventas") + " Ventas", money(resumen.getVentas()), dashboardPeriodLabel(dashboardPeriod)), 0, 0);
-        stats.add(stat(icon("profit") + " Ganancia", money(resumen.getGanancia()), dashboardPeriodLabel(dashboardPeriod)), 1, 0);
-        stats.add(stat(icon("Fiados") + " Fiados", money(resumen.getFiados()), dashboardPeriodLabel(dashboardPeriod)), 2, 0);
-        stats.add(stat(icon("Inventario") + " Stock bajo", String.valueOf(stockBajo.size()), "Productos por reponer"), 3, 0);
+        VBox hero = dashboardHero(resumen, stockBajo.size(), vencimientos.size());
 
-        HBox quick = new HBox(12,
-                shortcut("Nueva venta", "Ventas"),
-                shortcut("Productos", "Inventario"),
-                shortcut("Clientes", "Clientes"),
-                shortcut("Cobrar fiado", "Fiados")
+
+        HBox quick = new HBox(14,
+                dashboardShortcut("Nueva venta", "Crear una venta rapida", "Ventas"),
+                dashboardShortcut("Productos", "Ver y gestionar productos", "Inventario"),
+                dashboardShortcut("Clientes", "Ver y gestionar clientes", "Clientes"),
+                dashboardShortcut("Cobrar fiado", "Gestionar cobros pendientes", "Fiados")
         );
+        quick.getStyleClass().add("quick-actions");
         VBox low = panel("Avisos importantes", stockRows(stockBajo));
         VBox expirations = vencimientos.isEmpty()
                 ? panel("Alertas de vencimiento", expirationRows(vencimientos))
                 : expirationAlert(vencimientos);
-        return page("Buen dia", null, filterBar, stats, quick, chart(vendidos, "Ventas por producto - " + dashboardPeriodLabel(dashboardPeriod)), low, expirations);
+        HBox alerts = new HBox(14, low, expirations);
+        HBox.setHgrow(low, Priority.ALWAYS);
+        HBox.setHgrow(expirations, Priority.ALWAYS);
+        BarChart<String, Number> salesChart = chart(vendidos, "Ventas por producto - " + dashboardPeriodLabel(dashboardPeriod));
+        salesChart.setPrefHeight(250);
+        salesChart.getStyleClass().add("dashboard-chart");
+        return page("Inicio", null, hero, filterBar, quick, salesChart, alerts);
     }
 
+    private VBox dashboardHero(ResumenReporte resumen, int stockAlerts, int expirationAlerts) {
+        Label headline = title("Buen dia, Virgencita de Chapi", 30);
+        headline.getStyleClass().add("dashboard-headline");
+        HBox highlights = new HBox(12,
+                dashboardHighlight(icon("Ventas"), "Ventas", money(resumen.getVentas())),
+                dashboardHighlight(icon("Fiados"), "Fiados", money(resumen.getFiados())),
+                dashboardHighlight(icon("warning"), "Stock bajo", String.valueOf(stockAlerts)),
+                dashboardHighlight(icon("calendar"), "Vencimientos", String.valueOf(expirationAlerts))
+        );
+        highlights.getStyleClass().add("dashboard-highlights");
+        VBox left = new VBox(12, headline, highlights);
+        HBox.setHgrow(left, Priority.ALWAYS);
+        Button sale = button(icon("Ventas") + "  Nueva venta", "hero-action");
+        sale.setOnAction(e -> go("Ventas"));
+        Button supply = button(icon("Abastecimiento") + "  Abastecer", "hero-action secondary");
+        supply.setOnAction(e -> go("Abastecimiento"));
+        HBox actions = new HBox(14, sale, supply);
+        actions.setAlignment(Pos.BOTTOM_RIGHT);
+        VBox right = new VBox(grow(), actions);
+        HBox heroLine = new HBox(18, left, right);
+        heroLine.setAlignment(Pos.CENTER_LEFT);
+        VBox hero = new VBox(heroLine);
+        hero.getStyleClass().add("dashboard-hero");
+        return hero;
+    }
+
+    private VBox dashboardHighlight(String iconText, String name, String value) {
+        Label iconLabel = label(iconText, "dashboard-highlight-icon");
+        VBox text = new VBox(2, label(name, "dashboard-highlight-name"), label(value, "dashboard-highlight-value"));
+        HBox content = new HBox(10, iconLabel, text);
+        content.setAlignment(Pos.CENTER_LEFT);
+        VBox box = new VBox(content);
+        box.getStyleClass().add("dashboard-highlight");
+        return box;
+    }
+
+    private VBox dashboardStat(String name, String value, String tag, String iconText, String tone) {
+        Label iconLabel = label(iconText, "stat-icon stat-" + tone);
+        VBox text = new VBox(4, muted(name), title(value, 21), muted(tag));
+        HBox row = new HBox(14, iconLabel, text);
+        row.setAlignment(Pos.CENTER_LEFT);
+        VBox box = new VBox(row);
+        box.getStyleClass().add("stat dashboard-stat-card");
+        box.setMaxWidth(Double.MAX_VALUE);
+        box.setPrefWidth(260);
+        return box;
+    }
+
+    private HBox dashboardShortcut(String name, String subtitle, String target) {
+        Label iconLabel = label(icon(target), "quick-icon");
+        VBox text = new VBox(4, title(name, 15), muted(subtitle));
+        Label arrow = label(">", "quick-arrow");
+        HBox row = new HBox(12, iconLabel, text, grow(), arrow);
+        row.setAlignment(Pos.CENTER_LEFT);
+        row.getStyleClass().add("quick-card");
+        row.setOnMouseClicked(e -> go(target));
+        row.setPrefHeight(74);
+        row.setMaxWidth(Double.MAX_VALUE);
+        HBox.setHgrow(row, Priority.ALWAYS);
+        return row;
+    }
     private VBox ventas() {
         List<CartLine> cartLines = new ArrayList<>();
         List<ClienteResumen> clientes = safeClientes(null);
@@ -327,12 +391,7 @@ public class Main extends Application {
         products.setAlignment(Pos.TOP_LEFT);
         products.setPrefWrapLength(620);
         products.setMaxWidth(Double.MAX_VALUE);
-        for (Producto producto : safeProductos(null)) {
-            products.getChildren().add(product(producto, cartItems, total, cartLines));
-        }
-        if (products.getChildren().isEmpty()) {
-            products.getChildren().add(muted("No hay productos registrados en la base de datos."));
-        }
+        renderSaleProducts(products, cartItems, total, cartLines, null);
 
         ComboBox<String> saleType = select("CONTADO", "CONTADO", "CREDITO");
         Label saleTypeInfo = label("Venta al contado: cobra y descuenta stock al confirmar.", "notice-small");
@@ -358,7 +417,6 @@ public class Main extends Application {
 
         VBox cart = new VBox(12,
                 cartHeader,
-                label("Agrega productos y ajusta cantidades con + o -.", "notice-small"),
                 cartItems,
                 totalBox,
                 field("Tipo de venta", saleType),
@@ -370,7 +428,7 @@ public class Main extends Application {
         VBox side = new VBox(14, customerBox, cart);
         HBox body = new HBox(18, products, side);
         HBox.setHgrow(products, Priority.ALWAYS);
-        return page("Nueva venta", null, search("Buscar producto..."), body);
+        return page("Nueva venta", null, productSearch(products, cartItems, total, cartLines), body);
     }
 
     private VBox inventario() {
@@ -378,16 +436,11 @@ public class Main extends Application {
         add.setOnAction(e -> productModal());
         List<ProductoStockBajo> stockBajo = safeStockBajo();
         VBox list = new VBox(10);
-        for (Producto producto : safeProductos(null)) {
-            list.getChildren().add(item(producto));
-        }
-        if (list.getChildren().isEmpty()) {
-            list.getChildren().add(muted("No hay productos registrados en la base de datos."));
-        }
+        renderInventoryList(list, null);
         if (stockBajo.isEmpty()) {
-            return page("Inventario", add, search("Buscar producto..."), list);
+            return page("Inventario", add, inventorySearch(list), list);
         }
-        return page("Inventario", add, stockAlert(stockBajo), search("Buscar producto..."), list);
+        return page("Inventario", add, stockAlert(stockBajo), inventorySearch(list), list);
     }
 
     private VBox categorias() {
@@ -409,13 +462,8 @@ public class Main extends Application {
         Button add = button(icon("add") + " Nuevo cliente", "dark big-button");
         add.setOnAction(e -> clienteModal());
         HBox cards = new HBox(12);
-        for (ClienteResumen cliente : safeClientes(null)) {
-            cards.getChildren().add(client(cliente));
-        }
-        if (cards.getChildren().isEmpty()) {
-            cards.getChildren().add(muted("No hay clientes registrados en la base de datos."));
-        }
-        return page("Clientes", add, search("Buscar cliente..."), cards);
+        renderClientCards(cards, null);
+        return page("Clientes", add, clientSearch(cards), cards);
     }
 
     private VBox fiados() {
@@ -486,18 +534,29 @@ public class Main extends Application {
     }
 
     private VBox reportes() {
-        ResumenReporte resumen = safeResumenHoy();
-        List<ProductoVendidoReporte> masVendidos = safeMasVendidos();
+        LocalDate[] range = normalizedReportRange();
+        LocalDate start = range[0];
+        LocalDate end = range[1];
+        ResumenReporte resumen = safeResumen(start, end.plusDays(1));
+        List<ProductoVendidoReporte> masVendidos = safeMasVendidos(start, end.plusDays(1));
         List<ProductoStockBajo> stockBajo = safeStockBajo();
         List<Producto> vencimientos = expirationAlerts();
         Button download = button(icon("Reportes") + " Descargar PDF", "primary big-button");
-        download.setOnAction(e -> downloadReportsPdf());
+        download.setOnAction(e -> downloadReportsPdf(start, end));
+
         GridPane stats = new GridPane();
+        stats.getStyleClass().add("dashboard-stats");
         stats.setHgap(14);
-        stats.add(stat(icon("Ventas") + " Ventas", money(resumen.getVentas()), "Hoy"), 0, 0);
-        stats.add(stat(icon("profit") + " Ganancia", money(resumen.getGanancia()), "Hoy"), 1, 0);
-        stats.add(stat(icon("Fiados") + " Fiados", money(resumen.getFiados()), "Pendiente"), 2, 0);
-        stats.add(stat(icon("ok") + " Pagado", money(resumen.getPagado()), "Cobrado"), 3, 0);
+        stats.setVgap(14);
+        stats.add(stat(icon("Ventas") + " Ventas", money(resumen.getVentas()), reportRangeText(start, end)), 0, 0);
+        stats.add(stat(icon("profit") + " Ganancia", money(resumen.getGanancia()), reportRangeText(start, end)), 1, 0);
+        stats.add(stat(icon("Fiados") + " Fiados", money(resumen.getFiados()), "Pendiente en rango"), 2, 0);
+        stats.add(stat(icon("ok") + " Pagado", money(resumen.getPagado()), "Cobrado en rango"), 3, 0);
+
+        BarChart<String, Number> salesChart = chart(masVendidos, "Ventas por producto", true);
+        salesChart.setPrefHeight(320);
+        salesChart.getStyleClass().add("dashboard-chart");
+
         VBox sold = panel("Productos mas vendidos", soldRows(masVendidos));
         VBox sales = panel("Resumen de ventas", salesReportRows(resumen, masVendidos));
         VBox stock = panel("Alertas de inventario", stockReportRows(stockBajo));
@@ -505,9 +564,8 @@ public class Main extends Application {
         HBox reports = new HBox(16, sales, stock);
         HBox.setHgrow(sales, Priority.ALWAYS);
         HBox.setHgrow(stock, Priority.ALWAYS);
-        return page("Reportes", download, stats, chart(), reports, expirations, sold);
+        return page("Reportes", download, reportFilterBar(), stats, salesChart, reports, expirations, sold);
     }
-
     private VBox agenda() {
         ensureAgendaTables();
         TextField supplierName = input("Ej: Pepsico");
@@ -694,6 +752,8 @@ public class Main extends Application {
         TextField quantity = input("Ej: 25, 500 o 12");
         TextField cost = input("Ej: 85.00");
         TextField salePrice = input("Ej: 4.20");
+        TextField lot = input("Ej: L-001, F12, Bolsa 2026");
+        DatePicker lotExpiration = datePicker(null);
 
         VBox productForm = new VBox(12,
                 title("Producto", 18),
@@ -702,7 +762,9 @@ public class Main extends Application {
                 field("Cantidad recibida", quantity),
                 field("Unidad de compra", unit),
                 field("Costo de compra", cost),
-                field("Precio de venta", salePrice)
+                field("Precio de venta", salePrice),
+                field("Lote", lot),
+                field("Vencimiento del lote", lotExpiration)
         );
         productForm.getStyleClass().add("supply-form");
 
@@ -739,6 +801,8 @@ public class Main extends Application {
                 detail.setUnidadCompra(parts.unit);
                 detail.setCostoUnitario(parseMoney(cost.getText()));
                 detail.setPrecioVenta(parseMoney(salePrice.getText()));
+                detail.setLote(lot.getText().trim());
+                detail.setFechaVencimiento(lotExpiration.getValue());
 
                 BigDecimal normalized = parts.normalizedFor(selected.producto);
                 BigDecimal lineCost = normalized.multiply(detail.getCostoUnitario());
@@ -754,6 +818,8 @@ public class Main extends Application {
                         parts.amount.toPlainString() + " " + parts.unit,
                         detail.getCostoUnitario(),
                         detail.getPrecioVenta(),
+                        emptyToDefault(detail.getLote(), "Sin lote"),
+                        detail.getFechaVencimiento() == null ? "Sin vencimiento" : detail.getFechaVencimiento().toString(),
                         lineCost,
                         lineSaleValue
                 ));
@@ -779,8 +845,9 @@ public class Main extends Application {
             quantity.clear();
             cost.clear();
             salePrice.clear();
+            lot.clear();
+            lotExpiration.setValue(null);
         });
-
         VBox total = new VBox(12,
                 title("Resumen", 18),
                 summaryRow("Productos", summaryProductsValue),
@@ -821,6 +888,7 @@ public class Main extends Application {
         TextField cost = input("Ej: 3.50");
         TextField stock = input("Cantidad disponible");
         TextField minStock = input("Avisar cuando llegue a...");
+        TextField lot = input("Ej: L-001 o lote inicial");
         DatePicker expiration = datePicker(null);
 
         if (editing) {
@@ -830,6 +898,7 @@ public class Main extends Application {
             cost.setText(valueOrZero(existing.getPrecioCompra()).toPlainString());
             stock.setText(valueOrZero(existing.getStockActual()).toPlainString());
             minStock.setText(valueOrZero(existing.getStockMinimo()).toPlainString());
+            lot.setText(textOrEmpty(existing.getLote()));
             expiration.setValue(existing.getFechaVencimiento());
         }
 
@@ -847,6 +916,7 @@ public class Main extends Application {
                 field("Costo de compra", cost),
                 field("Cantidad en inventario", stock),
                 field("Avisar stock bajo en", minStock),
+                field("Lote inicial", lot),
                 field("Fecha de vencimiento", expiration)
         );
         box.getStyleClass().add("modal");
@@ -872,6 +942,7 @@ public class Main extends Application {
                 product.setPrecioCompra(parseMoney(cost.getText()));
                 product.setStockActual(parseMoney(stock.getText()));
                 product.setStockMinimo(parseMoney(minStock.getText()));
+                product.setLote(lot.getText().trim());
                 product.setFechaVencimiento(expiration.getValue());
                 Long id = productoService.guardarProducto(product);
                 product.setIdProducto(id);
@@ -1243,6 +1314,38 @@ public class Main extends Application {
         return "Desde " + range[0] + " hasta " + range[1].minusDays(1);
     }
 
+    private ResumenReporte safeResumen(LocalDate desde, LocalDate hastaExclusivo) {
+        try {
+            return reporteService.obtenerResumen(desde, hastaExclusivo);
+        } catch (RuntimeException ex) {
+            notify("Reportes", "No se pudo cargar el rango seleccionado. Mostrando datos recientes.");
+            return safeResumenHoy();
+        }
+    }
+
+    private List<ProductoVendidoReporte> safeMasVendidos(LocalDate desde, LocalDate hastaExclusivo) {
+        try {
+            return reporteService.listarProductosMasVendidos(desde, hastaExclusivo, 5);
+        } catch (RuntimeException ex) {
+            notify("Reportes", "No se pudo cargar el ranking del rango. Mostrando datos recientes.");
+            return safeMasVendidos();
+        }
+    }
+
+    private LocalDate[] normalizedReportRange() {
+        LocalDate start = reportStartDate == null ? LocalDate.now() : reportStartDate;
+        LocalDate end = reportEndDate == null ? start : reportEndDate;
+        if (end.isBefore(start)) {
+            LocalDate temp = start;
+            start = end;
+            end = temp;
+        }
+        return new LocalDate[]{start, end};
+    }
+
+    private String reportRangeText(LocalDate start, LocalDate end) {
+        return start.equals(end) ? "Dia " + start : "Desde " + start + " hasta " + end;
+    }
     private List<ProductoStockBajo> safeStockBajo() {
         synchronized (cacheLock) {
             return new ArrayList<>(cachedStockBajo);
@@ -1369,7 +1472,7 @@ public class Main extends Application {
         int limit = Math.min(products.size(), 5);
         for (int i = 0; i < limit; i++) {
             Producto product = products.get(i);
-            box.getChildren().add(row(product.getNombre(), expirationStatus(product.getFechaVencimiento())));
+            box.getChildren().add(row(product.getNombre(), lotLabel(product) + " | " + expirationStatus(product.getFechaVencimiento())));
         }
         if (products.size() > limit) {
             box.getChildren().add(muted("Hay mas productos por vencer. Revisa Reportes > Alertas de vencimiento."));
@@ -1438,13 +1541,17 @@ public class Main extends Application {
         rows.add(row("Rango de alerta", "Vencidos y proximos 30 dias"));
         rows.add(row("Productos con alerta", String.valueOf(products.size())));
         for (Producto product : products) {
-            String detail = expirationStatus(product.getFechaVencimiento());
+            String detail = lotLabel(product) + " | " + expirationStatus(product.getFechaVencimiento());
             if (product.getStockActual() != null) {
                 detail += " | Stock " + units(product.getStockActual()) + " " + textOrEmpty(product.getUnidadBase());
             }
             rows.add(row(product.getNombre(), detail));
         }
         return rows.toArray(Node[]::new);
+    }
+
+    private String lotLabel(Producto product) {
+        return textOrEmpty(product.getLote()).isBlank() ? "Sin lote" : "Lote " + product.getLote();
     }
 
     private String expirationStatus(LocalDate date) {
@@ -1462,10 +1569,10 @@ public class Main extends Application {
         return "Vence en " + days + " dia(s) - " + date;
     }
 
-    private void downloadReportsPdf() {
+    private void downloadReportsPdf(LocalDate start, LocalDate end) {
         FileChooser chooser = new FileChooser();
         chooser.setTitle("Guardar reporte PDF");
-        chooser.setInitialFileName("reporte-virgencita-" + LocalDate.now() + ".pdf");
+        chooser.setInitialFileName("reporte-virgencita-" + start + (start.equals(end) ? "" : "-a-" + end) + ".pdf");
         chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter("PDF", "*.pdf"));
         File downloads = new File(System.getProperty("user.home"), "Downloads");
         if (downloads.isDirectory()) {
@@ -1480,33 +1587,34 @@ public class Main extends Application {
             path = Path.of(path.toString() + ".pdf");
         }
         try {
-            writeDetailedReportPdf(path);
-            notify("PDF descargado", "Reporte guardado correctamente.");
+            writeDetailedReportPdf(path, start, end);
+            notify("PDF descargado", "Reporte guardado con el filtro seleccionado.");
         } catch (IOException ex) {
             notify("Error PDF", shortError(ex));
         }
     }
 
-    private void writeDetailedReportPdf(Path path) throws IOException {
-        ResumenReporte resumen = safeResumenHoy();
-        List<ProductoVendidoReporte> masVendidos = safeMasVendidos();
+    private void writeDetailedReportPdf(Path path, LocalDate start, LocalDate end) throws IOException {
+        ResumenReporte resumen = safeResumen(start, end.plusDays(1));
+        List<ProductoVendidoReporte> masVendidos = safeMasVendidos(start, end.plusDays(1));
         List<ProductoStockBajo> stockBajo = safeStockBajo();
         List<Producto> vencimientos = expirationAlerts();
         PdfReport pdf = new PdfReport();
 
-        pdf.section("Resumen del dia");
+        pdf.section("Reporte de ventas");
+        pdf.note("Filtro aplicado", reportRangeText(start, end) + " | Generado: " + LocalDateTime.now().format(DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm")));
         pdf.cardRow(new String[][]{
-                {"Ventas", money(resumen.getVentas()), "Total registrado hoy"},
-                {"Ganancia", money(resumen.getGanancia()), "Margen del dia"},
+                {"Ventas", money(resumen.getVentas()), "Total del rango"},
+                {"Ganancia", money(resumen.getGanancia()), "Margen del rango"},
                 {"Fiados", money(resumen.getFiados()), "Pendiente por cobrar"},
-                {"Pagado", money(resumen.getPagado()), "Cobrado"}
+                {"Pagado", money(resumen.getPagado()), "Cobrado en rango"}
         });
 
         pdf.note("Estado rapido", "Stock bajo: " + stockBajo.size()
                 + " producto(s) | Vencimientos: " + vencimientos.size()
                 + " producto(s) | Ranking: " + masVendidos.size() + " producto(s).");
 
-        pdf.barChart("Grafica de productos mas vendidos", masVendidos);
+        pdf.barChart("Ventas por producto", masVendidos);
 
         List<String[]> stockRows = new ArrayList<>();
         if (stockBajo.isEmpty()) {
@@ -1551,7 +1659,7 @@ public class Main extends Application {
 
         List<String[]> soldRows = new ArrayList<>();
         if (masVendidos.isEmpty()) {
-            soldRows.add(new String[]{"Sin ventas registradas", "0", "S/ 0.00"});
+            soldRows.add(new String[]{"No hay ventas en el rango seleccionado", "0", "S/ 0.00"});
         } else {
             for (ProductoVendidoReporte product : masVendidos) {
                 soldRows.add(new String[]{
@@ -1570,7 +1678,6 @@ public class Main extends Application {
 
         writePdf(path, pdf.finish());
     }
-
     private String expirationLabel(LocalDate date) {
         if (date == null) {
             return "Sin fecha";
@@ -2359,9 +2466,10 @@ public class Main extends Application {
         addInfo(grid, 4, "Costo compra", money(product.getPrecioCompra()));
         addInfo(grid, 5, "Stock actual", valueOrZero(product.getStockActual()) + " " + textOrEmpty(product.getUnidadBase()));
         addInfo(grid, 6, "Stock minimo", valueOrZero(product.getStockMinimo()) + " " + textOrEmpty(product.getUnidadBase()));
-        addInfo(grid, 7, "Vencimiento", product.getFechaVencimiento() == null ? "No registrado" : product.getFechaVencimiento().toString());
-        addInfo(grid, 8, "Estado", product.isEstado() ? "Activo" : "Inactivo");
-        addInfo(grid, 9, "Descripcion", textOrEmpty(product.getDescripcion()).isBlank() ? "Sin descripcion" : product.getDescripcion());
+        addInfo(grid, 7, "Lote", textOrEmpty(product.getLote()).isBlank() ? "No registrado" : product.getLote());
+        addInfo(grid, 8, "Vencimiento", product.getFechaVencimiento() == null ? "No registrado" : product.getFechaVencimiento().toString());
+        addInfo(grid, 9, "Estado", product.isEstado() ? "Activo" : "Inactivo");
+        addInfo(grid, 10, "Descripcion", textOrEmpty(product.getDescripcion()).isBlank() ? "Sin descripcion" : product.getDescripcion());
         return grid;
     }
 
@@ -2374,8 +2482,9 @@ public class Main extends Application {
     }
 
     private String productSummary(Producto product) {
+        String lot = textOrEmpty(product.getLote()).isBlank() ? "Sin lote" : "Lote " + product.getLote();
         return "Stock " + valueOrZero(product.getStockActual()) + " " + textOrEmpty(product.getUnidadBase())
-                + " | Precio " + money(product.getPrecioVenta());
+                + " | " + lot + " | Precio " + money(product.getPrecioVenta());
     }
 
     private Button findButtonInBox(VBox box, String text) {
@@ -2689,7 +2798,7 @@ public class Main extends Application {
         return empty;
     }
 
-    private VBox supplyPurchaseCard(String origin, String product, String quantity, BigDecimal unitCost, BigDecimal salePrice, BigDecimal lineCost, BigDecimal lineSaleValue) {
+    private VBox supplyPurchaseCard(String origin, String product, String quantity, BigDecimal unitCost, BigDecimal salePrice, String lot, String expiration, BigDecimal lineCost, BigDecimal lineSaleValue) {
         Label name = label(product, "supply-item-name");
         name.setWrapText(true);
         VBox details = new VBox(6,
@@ -2697,6 +2806,8 @@ public class Main extends Application {
                 supplyDetail("Cantidad recibida", quantity),
                 supplyDetail("Costo unitario", money(unitCost)),
                 supplyDetail("Precio de venta", money(salePrice)),
+                supplyDetail("Lote", lot),
+                supplyDetail("Vencimiento", expiration),
                 supplyDetail("Costo total", money(lineCost)),
                 supplyDetail("Valor para venta", money(lineSaleValue))
         );
@@ -2858,6 +2969,15 @@ public class Main extends Application {
         String right = textOrEmpty(note).isBlank() ? "" : " | " + note.trim();
         return left + right;
     }
+    private void ensureInventoryBatchColumns() {
+        try {
+            DatabaseConfig.jdbcTemplate().execute("ALTER TABLE productos ADD COLUMN IF NOT EXISTS lote VARCHAR(80)");
+            DatabaseConfig.jdbcTemplate().execute("ALTER TABLE detalle_abastecimientos ADD COLUMN IF NOT EXISTS lote VARCHAR(80)");
+            DatabaseConfig.jdbcTemplate().execute("ALTER TABLE detalle_abastecimientos ADD COLUMN IF NOT EXISTS fecha_vencimiento DATE");
+        } catch (RuntimeException ex) {
+            notify("Inventario", shortError(ex));
+        }
+    }
     private VBox panel(String panelTitle, Node... rows) {
         VBox p = new VBox(9, title(panelTitle, 17));
         p.getChildren().addAll(rows);
@@ -2873,10 +2993,142 @@ public class Main extends Application {
         return b;
     }
 
+
+    private List<Producto> productosParaVista(String query) {
+        List<Producto> productos = safeProductos(query);
+        if (!productos.isEmpty()) {
+            return productos;
+        }
+        try {
+            productos = productoService.buscarProductos(query);
+            if (query == null || query.isBlank()) {
+                synchronized (cacheLock) {
+                    cachedProductos = new ArrayList<>(productos);
+                }
+            }
+            return productos;
+        } catch (RuntimeException ex) {
+            return productos;
+        }
+    }
+    private HBox productSearch(FlowPane products, VBox cartItems, Label total, List<CartLine> cartLines) {
+        TextField s = input("Buscar producto...");
+        Button find = button(icon("search") + " Buscar", "soft");
+        Runnable apply = () -> renderSaleProducts(products, cartItems, total, cartLines, s.getText());
+        find.setOnAction(e -> apply.run());
+        s.setOnAction(e -> apply.run());
+        HBox box = new HBox(10, s, find);
+        box.getStyleClass().add("search");
+        HBox.setHgrow(s, Priority.ALWAYS);
+        return box;
+    }
+
+    private void renderSaleProducts(FlowPane products, VBox cartItems, Label total, List<CartLine> cartLines, String query) {
+        products.getChildren().clear();
+        for (Producto producto : productosParaVista(query)) {
+            products.getChildren().add(product(producto, cartItems, total, cartLines));
+        }
+        if (products.getChildren().isEmpty()) {
+            products.getChildren().add(muted(query == null || query.isBlank()
+                    ? "No hay productos registrados en la base de datos."
+                    : "No se encontraron productos con ese texto."));
+        }
+    }
+
+    private HBox inventorySearch(VBox list) {
+        TextField s = input("Buscar producto...");
+        Button find = button(icon("search") + " Buscar", "soft");
+        Runnable apply = () -> renderInventoryList(list, s.getText());
+        find.setOnAction(e -> apply.run());
+        s.setOnAction(e -> apply.run());
+        HBox box = new HBox(10, s, find);
+        box.getStyleClass().add("search");
+        HBox.setHgrow(s, Priority.ALWAYS);
+        return box;
+    }
+
+    private void renderInventoryList(VBox list, String query) {
+        list.getChildren().clear();
+        for (Producto producto : productosParaVista(query)) {
+            list.getChildren().add(item(producto));
+        }
+        if (list.getChildren().isEmpty()) {
+            list.getChildren().add(muted(query == null || query.isBlank()
+                    ? "No hay productos registrados en la base de datos."
+                    : "No se encontraron productos con ese texto."));
+        }
+    }
+
+    private HBox clientSearch(HBox cards) {
+        TextField s = input("Buscar cliente...");
+        Button find = button(icon("search") + " Buscar", "soft");
+        Runnable apply = () -> renderClientCards(cards, s.getText());
+        find.setOnAction(e -> apply.run());
+        s.setOnAction(e -> apply.run());
+        HBox box = new HBox(10, s, find);
+        box.getStyleClass().add("search");
+        HBox.setHgrow(s, Priority.ALWAYS);
+        return box;
+    }
+
+    private void renderClientCards(HBox cards, String query) {
+        cards.getChildren().clear();
+        for (ClienteResumen cliente : safeClientes(query)) {
+            cards.getChildren().add(client(cliente));
+        }
+        if (cards.getChildren().isEmpty()) {
+            cards.getChildren().add(muted(query == null || query.isBlank()
+                    ? "No hay clientes registrados en la base de datos."
+                    : "No se encontraron clientes con ese texto."));
+        }
+    }
+
+    private HBox reportFilterBar() {
+        LocalDate[] range = normalizedReportRange();
+        ComboBox<String> mode = select(range[0].equals(range[1]) ? "DIA" : "RANGO", "DIA", "RANGO");
+        DatePicker start = datePicker(range[0]);
+        DatePicker end = datePicker(range[1]);
+        VBox endField = field("Fecha final", end);
+        endField.setVisible("RANGO".equals(mode.getValue()));
+        endField.setManaged("RANGO".equals(mode.getValue()));
+        mode.setOnAction(e -> {
+            boolean rangeMode = "RANGO".equals(mode.getValue());
+            endField.setVisible(rangeMode);
+            endField.setManaged(rangeMode);
+            if (!rangeMode) {
+                end.setValue(start.getValue());
+            }
+        });
+        Button apply = button(icon("ok") + " Aplicar filtros", "primary big-button");
+        apply.setOnAction(e -> {
+            reportStartDate = start.getValue() == null ? LocalDate.now() : start.getValue();
+            reportEndDate = "RANGO".equals(mode.getValue())
+                    ? (end.getValue() == null ? reportStartDate : end.getValue())
+                    : reportStartDate;
+            go("Reportes");
+        });
+        Button clean = button("Limpiar filtros", "gray big-button");
+        clean.setOnAction(e -> {
+            reportStartDate = LocalDate.now();
+            reportEndDate = LocalDate.now();
+            go("Reportes");
+        });
+        HBox box = new HBox(12,
+                field("Tipo", mode),
+                field("Fecha inicial", start),
+                endField,
+                apply,
+                clean
+        );
+        box.setAlignment(Pos.BOTTOM_LEFT);
+        box.getStyleClass().add("dashboard-filter");
+        return box;
+    }
+
     private HBox search(String prompt) {
         TextField s = input(prompt);
         Button find = button(icon("search") + " Buscar", "soft");
-        find.setOnAction(e -> notify("Busqueda", "Filtro aplicado en pantalla."));
+        find.setOnAction(e -> notify("Busqueda", "Usa el buscador de esta pantalla para filtrar datos."));
         HBox box = new HBox(10, s, find);
         box.getStyleClass().add("search");
         HBox.setHgrow(s, Priority.ALWAYS);
@@ -2884,15 +3136,21 @@ public class Main extends Application {
     }
 
     private BarChart<String, Number> chart() {
-        return chart(safeMasVendidos(), "Ventas por producto");
+        return chart(safeMasVendidos(), "Ventas por producto", true);
     }
 
     private BarChart<String, Number> chart(List<ProductoVendidoReporte> products, String title) {
+        return chart(products, title, false);
+    }
+
+    private BarChart<String, Number> chart(List<ProductoVendidoReporte> products, String title, boolean moneyMode) {
         CategoryAxis xAxis = new CategoryAxis();
         NumberAxis yAxis = new NumberAxis();
         xAxis.setLabel("Producto");
         xAxis.setTickLabelRotation(-18);
-        yAxis.setLabel("Total vendido (S/)");
+        yAxis.setLabel(moneyMode ? "Total vendido (S/)" : "Cantidad vendida");
+        yAxis.setForceZeroInRange(true);
+        yAxis.setAutoRanging(true);
 
         BarChart<String, Number> c = new BarChart<>(xAxis, yAxis);
         c.setTitle(title);
@@ -2903,16 +3161,33 @@ public class Main extends Application {
 
         XYChart.Series<String, Number> series = new XYChart.Series<>();
         for (ProductoVendidoReporte product : products) {
-            series.getData().add(new XYChart.Data<>(
-                    textOrEmpty(product.getNombre()),
-                    valueOrZero(product.getTotalVendido())
-            ));
+            BigDecimal value = moneyMode ? valueOrZero(product.getTotalVendido()) : valueOrZero(product.getCantidadVendida());
+            if (value.compareTo(BigDecimal.ZERO) > 0) {
+                XYChart.Data<String, Number> data = new XYChart.Data<>(textOrEmpty(product.getNombre()), value);
+                data.nodeProperty().addListener((obs, oldNode, node) -> styleChartBar(node));
+                series.getData().add(data);
+            }
+        }
+        if (series.getData().isEmpty()) {
+            XYChart.Data<String, Number> empty = new XYChart.Data<>("Sin ventas", 0);
+            empty.nodeProperty().addListener((obs, oldNode, node) -> styleChartBar(node));
+            series.getData().add(empty);
+            c.setTitle(title + " - No hay ventas registradas para el rango seleccionado");
         }
         c.getData().add(series);
+        Platform.runLater(() -> {
+            for (XYChart.Data<String, Number> data : series.getData()) {
+                styleChartBar(data.getNode());
+            }
+        });
         return c;
     }
 
-    private void notify(String title, String text) {
+    private void styleChartBar(Node node) {
+        if (node != null) {
+            node.setStyle("-fx-bar-fill: #0b7fe8; -fx-background-color: #0b7fe8; -fx-background-radius: 7px 7px 0 0;");
+        }
+    }    private void notify(String title, String text) {
         if (mainStage == null || !mainStage.isShowing()) return;
         Popup popup = new Popup();
         VBox box = new VBox(4, label(title, "toast-title"), label(text, "toast-text"));
@@ -3168,6 +3443,9 @@ public class Main extends Application {
             case "Fiados", "Cobrar fiado" -> "\uD83D\uDCCB";
             case "Reportes" -> "\uD83D\uDCCA";
             case "Abastecimiento" -> "\uD83D\uDE9A";
+            case "warning" -> "\u26A0";
+            case "calendar" -> "\uD83D\uDCC5";
+            case "help" -> "\uD83D\uDD14";
             case "Agenda" -> "\u260E";
             case "money" -> "\uD83D\uDCB5";
             case "profit" -> "\uD83D\uDCC8";

@@ -24,29 +24,34 @@ public class ProductoRepository {
 
     public Long guardar(Producto producto) {
         Date fechaVencimiento = producto.getFechaVencimiento() == null ? null : Date.valueOf(producto.getFechaVencimiento());
-        return executor.callForLong(
-                DbFunctions.GUARDAR_PRODUCTO,
-                producto.getIdProducto(),
-                producto.getIdCategoria(),
-                producto.getNombre(),
-                producto.getDescripcion(),
-                producto.getTipoVenta(),
-                producto.getUnidadBase(),
-                producto.getEquivalencia(),
-                producto.getPrecioCompra(),
-                producto.getPrecioVenta(),
-                producto.getStockActual(),
-                producto.getStockMinimo(),
-                fechaVencimiento
-        );
-    }
-
-    public List<Producto> buscar(String texto) {
-        try {
-            return executor.query(DbFunctions.BUSCAR_PRODUCTOS, (rs, rowNum) -> mapProducto(rs), texto);
-        } catch (RuntimeException ex) {
-            return buscarDirecto(texto);
+        if (producto.getIdProducto() == null) {
+            return executor.jdbcTemplate().queryForObject("""
+                    INSERT INTO productos (
+                        id_categoria, nombre, descripcion, tipo_venta, unidad_base, equivalencia,
+                        precio_compra, precio_venta, stock_actual, stock_minimo, lote, fecha_vencimiento
+                    ) VALUES (?, ?, ?, UPPER(COALESCE(?, 'UNIDAD')), UPPER(COALESCE(?, 'UNIDAD')), COALESCE(?, 1),
+                              COALESCE(?, 0), COALESCE(?, 0), COALESCE(?, 0), COALESCE(?, 0), ?, ?)
+                    RETURNING id_producto
+                    """, Long.class,
+                    producto.getIdCategoria(), producto.getNombre(), producto.getDescripcion(), producto.getTipoVenta(), producto.getUnidadBase(),
+                    producto.getEquivalencia(), producto.getPrecioCompra(), producto.getPrecioVenta(), producto.getStockActual(), producto.getStockMinimo(),
+                    producto.getLote(), fechaVencimiento);
         }
+        return executor.jdbcTemplate().queryForObject("""
+                UPDATE productos
+                SET id_categoria = ?, nombre = ?, descripcion = ?, tipo_venta = UPPER(COALESCE(?, 'UNIDAD')),
+                    unidad_base = UPPER(COALESCE(?, 'UNIDAD')), equivalencia = COALESCE(?, 1),
+                    precio_compra = COALESCE(?, 0), precio_venta = COALESCE(?, 0), stock_actual = COALESCE(?, 0),
+                    stock_minimo = COALESCE(?, 0), lote = ?, fecha_vencimiento = ?
+                WHERE id_producto = ?
+                RETURNING id_producto
+                """, Long.class,
+                producto.getIdCategoria(), producto.getNombre(), producto.getDescripcion(), producto.getTipoVenta(), producto.getUnidadBase(),
+                producto.getEquivalencia(), producto.getPrecioCompra(), producto.getPrecioVenta(), producto.getStockActual(), producto.getStockMinimo(),
+                producto.getLote(), fechaVencimiento, producto.getIdProducto());
+    }
+    public List<Producto> buscar(String texto) {
+        return buscarDirecto(texto);
     }
 
     public List<ProductoStockBajo> listarStockBajo() {
@@ -64,7 +69,7 @@ public class ProductoRepository {
             return executor.querySql("""
                     SELECT id_producto, nombre, stock_actual, stock_minimo, unidad_base
                     FROM productos
-                    WHERE estado = TRUE
+                    WHERE COALESCE(estado, TRUE) = TRUE
                       AND stock_actual <= stock_minimo
                     ORDER BY stock_actual ASC, nombre ASC
                     """, (rs, rowNum) -> {
@@ -80,15 +85,20 @@ public class ProductoRepository {
     }
 
     private List<Producto> buscarDirecto(String texto) {
-        String filter = texto == null || texto.isBlank() ? null : "%" + texto + "%";
-        return executor.querySql("""
+        String baseSql = """
                 SELECT id_producto, id_categoria, nombre, descripcion, tipo_venta, unidad_base,
-                       precio_venta, stock_actual, stock_minimo
+                       equivalencia, precio_compra, precio_venta, stock_actual, stock_minimo, lote, fecha_vencimiento, estado
                 FROM productos
-                WHERE estado = TRUE
-                  AND (? IS NULL OR nombre ILIKE ? OR descripcion ILIKE ?)
+                WHERE COALESCE(estado, TRUE) = TRUE
+                """;
+        if (texto == null || texto.isBlank()) {
+            return executor.querySql(baseSql + " ORDER BY nombre", (rs, rowNum) -> mapProducto(rs));
+        }
+        String filter = "%" + texto.trim() + "%";
+        return executor.querySql(baseSql + """
+                  AND (nombre ILIKE ? OR COALESCE(descripcion, '') ILIKE ?)
                 ORDER BY nombre
-                """, (rs, rowNum) -> mapProducto(rs), filter, filter, filter);
+                """, (rs, rowNum) -> mapProducto(rs), filter, filter);
     }
 
     private Producto mapProducto(ResultSet rs) throws SQLException {
@@ -104,6 +114,7 @@ public class ProductoRepository {
         producto.setPrecioVenta(rs.getBigDecimal("precio_venta"));
         producto.setStockActual(rs.getBigDecimal("stock_actual"));
         producto.setStockMinimo(rs.getBigDecimal("stock_minimo"));
+        producto.setLote(hasColumn(rs, "lote") ? rs.getString("lote") : null);
         Date fechaVencimiento = hasColumn(rs, "fecha_vencimiento") ? rs.getDate("fecha_vencimiento") : null;
         producto.setFechaVencimiento(fechaVencimiento == null ? null : fechaVencimiento.toLocalDate());
         producto.setEstado(!hasColumn(rs, "estado") || rs.getBoolean("estado"));

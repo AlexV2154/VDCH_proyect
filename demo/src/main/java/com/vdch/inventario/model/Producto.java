@@ -15,6 +15,7 @@ public class Producto {
     private BigDecimal precioVenta;
     private BigDecimal stockActual;
     private BigDecimal stockMinimo;
+    private String lote;
     private LocalDate fechaVencimiento;
     private boolean estado;
 
@@ -104,6 +105,14 @@ public class Producto {
 
     public void setStockMinimo(BigDecimal stockMinimo) {
         this.stockMinimo = stockMinimo;
+    }
+
+    public String getLote() {
+        return lote;
+    }
+
+    public void setLote(String lote) {
+        this.lote = lote;
     }
 
     public LocalDate getFechaVencimiento() {

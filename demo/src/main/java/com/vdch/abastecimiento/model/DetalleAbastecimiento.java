@@ -1,6 +1,7 @@
 package com.vdch.abastecimiento.model;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 
 public class DetalleAbastecimiento {
     private Long idDetalleAbastecimiento;
@@ -10,6 +11,8 @@ public class DetalleAbastecimiento {
     private String unidadCompra;
     private BigDecimal costoUnitario;
     private BigDecimal precioVenta;
+    private String lote;
+    private LocalDate fechaVencimiento;
     private BigDecimal subtotal;
 
     public Long getIdDetalleAbastecimiento() {
@@ -66,6 +69,22 @@ public class DetalleAbastecimiento {
 
     public void setPrecioVenta(BigDecimal precioVenta) {
         this.precioVenta = precioVenta;
+    }
+
+    public String getLote() {
+        return lote;
+    }
+
+    public void setLote(String lote) {
+        this.lote = lote;
+    }
+
+    public LocalDate getFechaVencimiento() {
+        return fechaVencimiento;
+    }
+
+    public void setFechaVencimiento(LocalDate fechaVencimiento) {
+        this.fechaVencimiento = fechaVencimiento;
     }
 
     public BigDecimal getSubtotal() {
